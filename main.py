@@ -297,8 +297,11 @@ app.add_handler(CommandHandler("play", play))
 app.add_handler(CommandHandler("points", points))
 app.add_handler(CommandHandler("result", result))
 
-# Admin (testing)
-app.add_handler(CommandHandler("close_round", close_round))
-app.add_handler(CommandHandler("new_round", new_round))
+# ⏰ Run round job every X minutes
+app.job_queue.run_repeating(
+    round_job,
+    interval=ROUND_DURATION_MINUTES * 60,
+    first=ROUND_DURATION_MINUTES * 60
+)
 
 app.run_polling()
