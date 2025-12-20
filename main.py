@@ -1,36 +1,33 @@
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import os
 import random
 from datetime import datetime, timedelta
 
+# =============================
+# Config
+# =============================
 TOKEN = os.getenv("BOT_TOKEN")
-
-# 🔐 Replace with YOUR Telegram ID
 ADMIN_ID = 891656290
 
-# -----------------------------
-# Game configuration
-# -----------------------------
 ROUND_DURATION_MINUTES = 10
 POINTS_PER_WIN = 10
 
-# -----------------------------
-# Game state (in-memory)
-# -----------------------------
-users = {}        # user_id -> points
-guesses = {}      # user_id -> guessed number
+# =============================
+# Game State (memory)
+# =============================
+users = {}      # user_id -> points
+guesses = {}    # user_id -> guess
 
 current_round = {
     "round_id": 1,
     "result": None,
-    "closed": False,
     "ends_at": datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES)
 }
 
-# -----------------------------
+# =============================
 # Helpers
-# -----------------------------
+# =============================
 def generate_result():
     return random.randint(0, 99)
 
@@ -39,56 +36,48 @@ def time_left():
     seconds = max(0, int(delta.total_seconds()))
     return seconds // 60, seconds % 60
 
-# -----------------------------
+# =============================
 # Commands
-# -----------------------------
+# =============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.setdefault(update.effective_user.id, 0)
-
     m, s = time_left()
+
     await update.message.reply_text(
-        "🎮 Number Guess Game (Points Mode)\n\n"
+        "🎮 Number Guess Game (Points Only)\n\n"
         "⚠️ Disclaimer:\n"
         "Free guessing game. Random results.\n"
         "No money, no betting, no rewards.\n\n"
-        f"🕒 Current Round ID: {current_round['round_id']}\n"
+        f"🕒 Round ID: {current_round['round_id']}\n"
         f"⏳ Time left: {m}m {s}s\n\n"
         "Commands:\n"
-        "/play <00-99> – submit guess\n"
-        "/points – your points\n"
-        "/result – last result\n"
+        "/play <00-99>\n"
+        "/points\n"
+        "/result"
     )
 
 async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    users.setdefault(user_id, 0)
+    uid = update.effective_user.id
+    users.setdefault(uid, 0)
 
-    if current_round["closed"]:
-        await update.message.reply_text("⛔ Round closed. Wait for next round.")
-        return
-
-    if user_id in guesses:
+    if uid in guesses:
         await update.message.reply_text("❗ You already played this round.")
         return
 
     if not context.args:
-        await update.message.reply_text("Usage: /play <number 00–99>")
+        await update.message.reply_text("Usage: /play <00-99>")
         return
 
     try:
         guess = int(context.args[0])
+        if guess < 0 or guess > 99:
+            raise ValueError
     except ValueError:
-        await update.message.reply_text("❌ Enter a valid number (00–99).")
+        await update.message.reply_text("❌ Enter a number between 00–99.")
         return
 
-    if guess < 0 or guess > 99:
-        await update.message.reply_text("❌ Number must be between 00 and 99.")
-        return
-
-    guesses[user_id] = guess
-    await update.message.reply_text(
-        f"✅ Guess **{guess:02d}** submitted.\nGood luck!"
-    )
+    guesses[uid] = guess
+    await update.message.reply_text(f"✅ Guess {guess:02d} submitted.")
 
 async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pts = users.get(update.effective_user.id, 0)
@@ -99,36 +88,32 @@ async def result(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Result not declared yet.")
     else:
         await update.message.reply_text(
-            f"🏁 Last result: **{current_round['result']:02d}**\n"
+            f"🏁 Last result: {current_round['result']:02d}\n"
             f"Round ID: {current_round['round_id']}"
         )
 
-# -----------------------------
-# ⏱️ Round timer job
-# -----------------------------
+# =============================
+# ⏱️ Round Timer Job
+# =============================
 async def round_job(context: ContextTypes.DEFAULT_TYPE):
     global guesses
 
-    # Close round
-    current_round["closed"] = True
     result = generate_result()
     current_round["result"] = result
 
-    # Score guesses
     for uid, g in guesses.items():
         if g == result:
-            users[uid] = users.get(uid, 0) + POINTS_PER_WIN
+            users[uid] += POINTS_PER_WIN
 
-    # Start new round
+    # reset for next round
     guesses = {}
     current_round["round_id"] += 1
     current_round["result"] = None
-    current_round["closed"] = False
     current_round["ends_at"] = datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES)
 
-# -----------------------------
-# App setup
-# -----------------------------
+# =============================
+# App Setup
+# =============================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
@@ -136,168 +121,6 @@ app.add_handler(CommandHandler("play", play))
 app.add_handler(CommandHandler("points", points))
 app.add_handler(CommandHandler("result", result))
 
-# ⏰ Run round job every X minutes
-app.job_queue.run_repeating(
-    round_job,
-    interval=ROUND_DURATION_MINUTES * 60,
-    first=ROUND_DURATION_MINUTES * 60
-)
-
-app.run_polling()from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
-import os
-import random
-from datetime import datetime
-
-TOKEN = os.getenv("BOT_TOKEN")
-
-# 🔐 Replace with YOUR Telegram ID
-ADMIN_ID = 891656290
-
-# -----------------------------
-# In-memory game state (simple)
-# -----------------------------
-users = {}          # user_id -> points
-guesses = {}        # user_id -> guessed number (current round)
-current_round = {
-    "round_id": 1,
-    "result": None,
-    "closed": False,
-    "started_at": datetime.utcnow()
-}
-
-# -----------------------------
-# Helpers
-# -----------------------------
-def get_points(user_id):
-    return users.get(user_id, 0)
-
-def add_points(user_id, pts):
-    users[user_id] = users.get(user_id, 0) + pts
-
-def generate_result():
-    return random.randint(0, 99)
-
-def is_admin(update: Update):
-    return update.effective_user.id == ADMIN_ID
-
-# -----------------------------
-# Commands
-# -----------------------------
-async def start(update: Update, context):
-    users.setdefault(update.effective_user.id, 0)
-    await update.message.reply_text(
-        "🎮 Number Guess Game (Points Mode)\n\n"
-        "⚠️ Disclaimer:\n"
-        "This is a FREE number guessing game for entertainment only.\n"
-        "Results are randomly generated by the system.\n"
-        "No money, no betting, no rewards.\n\n"
-        "Commands:\n"
-        "/play <00-99> – submit your guess\n"
-        "/points – check your points\n"
-        "/result – last result\n"
-    )
-
-async def play(update: Update, context):
-    user_id = update.effective_user.id
-    users.setdefault(user_id, 0)
-
-    if current_round["closed"]:
-        await update.message.reply_text("⛔ This round is closed. Wait for the next round.")
-        return
-
-    if user_id in guesses:
-        await update.message.reply_text("❗ You already played this round.")
-        return
-
-    if not context.args:
-        await update.message.reply_text("Usage: /play <number 00-99>")
-        return
-
-    try:
-        guess = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Please enter a valid number (00–99).")
-        return
-
-    if guess < 0 or guess > 99:
-        await update.message.reply_text("❌ Number must be between 00 and 99.")
-        return
-
-    guesses[user_id] = guess
-    await update.message.reply_text(
-        f"✅ Your guess **{guess:02d}** is submitted for this round.\n"
-        "Wait for the result!"
-    )
-
-async def points(update: Update, context):
-    pts = get_points(update.effective_user.id)
-    await update.message.reply_text(f"⭐ Your points: {pts}")
-
-async def result(update: Update, context):
-    if current_round["result"] is None:
-        await update.message.reply_text("ℹ️ Result not declared yet.")
-    else:
-        await update.message.reply_text(
-            f"🏁 Last result: **{current_round['result']:02d}**\n"
-            f"Round ID: {current_round['round_id']}"
-        )
-
-# -----------------------------
-# Admin controls (testing)
-# -----------------------------
-async def close_round(update: Update, context):
-    if not is_admin(update):
-        await update.message.reply_text("❌ Not authorized.")
-        return
-
-    if current_round["closed"]:
-        await update.message.reply_text("Round already closed.")
-        return
-
-    # Close & generate result
-    current_round["result"] = generate_result()
-    current_round["closed"] = True
-
-    # Score guesses
-    winners = 0
-    for uid, g in guesses.items():
-        if g == current_round["result"]:
-            add_points(uid, 10)
-            winners += 1
-
-    await update.message.reply_text(
-        f"🔒 Round closed.\n"
-        f"🎯 Result: {current_round['result']:02d}\n"
-        f"🏆 Winners: {winners}"
-    )
-
-async def new_round(update: Update, context):
-    if not is_admin(update):
-        await update.message.reply_text("❌ Not authorized.")
-        return
-
-    guesses.clear()
-    current_round["round_id"] += 1
-    current_round["result"] = None
-    current_round["closed"] = False
-    current_round["started_at"] = datetime.utcnow()
-
-    await update.message.reply_text(
-        f"🆕 New round started.\nRound ID: {current_round['round_id']}"
-    )
-
-# -----------------------------
-# App setup
-# -----------------------------
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("play", play))
-app.add_handler(CommandHandler("points", points))
-app.add_handler(CommandHandler("result", result))
-
-# ⏰ Run round job every X minutes
 app.job_queue.run_repeating(
     round_job,
     interval=ROUND_DURATION_MINUTES * 60,
