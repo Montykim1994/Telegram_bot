@@ -28,7 +28,7 @@ current_round = {
     "ends_at": datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES),
 }
 
-def # ==============================
+# ==============================
 # KEYBOARD (0–9)
 # ==============================
 def number_keyboard():
