@@ -70,30 +70,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/result (admin only)"
     )
 
-async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+# ==============================
+# BUTTON HANDLER (0–9)
+# ==============================
+async def button_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
     users.setdefault(user_id, 0)
 
     if user_id in guesses:
-        await update.message.reply_text("❗ You already played this round.")
+        await query.edit_message_text("❗ You already played this round.")
         return
 
-    if not context.args:
-        await update.message.reply_text("Usage: /play <00–99>")
-        return
-
-    try:
-        guess = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Enter a valid number (00–99).")
-        return
-
-    if not 0 <= guess <= 99:
-        await update.message.reply_text("❌ Number must be between 00 and 99.")
-        return
+    data = query.data  # example: play_7
+    guess = int(data.split("_")[1])
 
     guesses[user_id] = guess
-    await update.message.reply_text(f"✅ Guess **{guess:02d}** submitted!")
+
+    await query.edit_message_text(
+        f"✅ Your guess **{guess}** is locked!\n"
+        "Wait for the result ⏳"
+    )
 
 async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pts = users.get(update.effective_user.id, 0)
