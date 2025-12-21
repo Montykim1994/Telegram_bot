@@ -28,6 +28,9 @@ current_round = {
     "ends_at": datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES),
 }
 
+def # ==============================
+# KEYBOARD (0–9)
+# ==============================
 def number_keyboard():
     keyboard = [
         [
@@ -45,17 +48,7 @@ def number_keyboard():
             InlineKeyboardButton("9", callback_data="play_9"),
         ]
     ]
-    return InlineKeyboardMarkup(keyboard) =============================
-# HELPERS
-# =============================
-def generate_result():
-    return random.randint(0, 99)
-
-def time_left():
-    delta = current_round["ends_at"] - datetime.utcnow()
-    seconds = max(0, int(delta.total_seconds()))
-    return seconds // 60, seconds % 60
-
+    return InlineKeyboardMarkup(keyboard)
 # =============================
 # COMMANDS
 # =============================
