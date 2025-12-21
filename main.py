@@ -3,34 +3,44 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
-    ContextTypes
+    ContextTypes,
 )
 import os
 import random
 from datetime import datetime, timedelta
 
-# =============================
+# ==============================
 # CONFIG
-# =============================
-TOKEN = os.getenv("BOT_TOKEN")  # Set this in Railway
+# ==============================
+TOKEN = os.getenv("BOT_TOKEN")  # Set in Railway Variables
 ADMIN_ID = 891656290            # Your Telegram ID
+
 ROUND_DURATION_MINUTES = 10
 POINTS_PER_WIN = 10
 
-# =============================
-# GAME STATE (in-memory)
-# =============================
-users = {}        # user_id -> points
-guesses = {}      # user_id -> guessed number
+# ==============================
+# GAME STATE (IN-MEMORY)
+# ==============================
+users = {}      # user_id -> points
+guesses = {}    # user_id -> guess
 
 current_round = {
     "round_id": 1,
     "ends_at": datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES),
+    "result": None,
 }
 
 # ==============================
-# KEYBOARD (0–9)
+# HELPERS
 # ==============================
+def generate_result():
+    return random.randint(0, 9)
+
+def time_left():
+    delta = current_round["ends_at"] - datetime.utcnow()
+    seconds = max(0, int(delta.total_seconds()))
+    return seconds // 60, seconds % 60
+
 def number_keyboard():
     keyboard = [
         [
@@ -46,32 +56,47 @@ def number_keyboard():
             InlineKeyboardButton("7", callback_data="play_7"),
             InlineKeyboardButton("8", callback_data="play_8"),
             InlineKeyboardButton("9", callback_data="play_9"),
-        ]
+        ],
     ]
     return InlineKeyboardMarkup(keyboard)
-# =============================
+
+# ==============================
 # COMMANDS
-# =============================
+# ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.setdefault(update.effective_user.id, 0)
     m, s = time_left()
 
     await update.message.reply_text(
-        "🎮 Number Guess Game (Points Mode)\n\n"
-        "⚠️ DISCLAIMER\n"
-        "• Free game\n"
-        "• No money\n"
-        "• Random system result\n\n"
-        f"🆔 Round ID: {current_round['round_id']}\n"
+        "🎮 Number Guess Game (0–9)\n\n"
+        "⚠️ Free game • Points only • No money\n\n"
+        f"🆔 Round: {current_round['round_id']}\n"
         f"⏳ Time left: {m}m {s}s\n\n"
-        "Commands:\n"
-        "/play <00-99>\n"
-        "/points\n"
-        "/result (admin only)"
+        "Tap a number below 👇",
+        reply_markup=number_keyboard(),
     )
 
+async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Choose a number 👇",
+        reply_markup=number_keyboard(),
+    )
+
+async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pts = users.get(update.effective_user.id, 0)
+    await update.message.reply_text(f"⭐ Your points: {pts}")
+
+async def result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if current_round["result"] is None:
+        await update.message.reply_text("ℹ️ Result not declared yet.")
+    else:
+        await update.message.reply_text(
+            f"🏁 Last result: {current_round['result']}\n"
+            f"Round ID: {current_round['round_id']}"
+        )
+
 # ==============================
-# BUTTON HANDLER (0–9)
+# BUTTON HANDLER
 # ==============================
 async def button_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -84,9 +109,7 @@ async def button_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❗ You already played this round.")
         return
 
-    data = query.data  # example: play_7
-    guess = int(data.split("_")[1])
-
+    guess = int(query.data.split("_")[1])
     guesses[user_id] = guess
 
     await query.edit_message_text(
@@ -94,19 +117,18 @@ async def button_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Wait for the result ⏳"
     )
 
-async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pts = users.get(update.effective_user.id, 0)
-    await update.message.reply_text(f"⭐ Your points: {pts}")
-
-async def result(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only admin can declare result
+# ==============================
+# ADMIN: CLOSE ROUND
+# ==============================
+async def close(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("ℹ️ Result not declared yet.")
+        await update.message.reply_text("❌ Not authorized.")
         return
 
     result = generate_result()
-    winners = 0
+    current_round["result"] = result
 
+    winners = 0
     for uid, g in guesses.items():
         if g == result:
             users[uid] += POINTS_PER_WIN
@@ -115,23 +137,25 @@ async def result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     guesses.clear()
     current_round["round_id"] += 1
     current_round["ends_at"] = datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES)
+    current_round["result"] = None
 
     await update.message.reply_text(
-        f"🏁 RESULT DECLARED\n\n"
-        f"🎯 Number: {result:02d}\n"
-        f"🏆 Winners: {winners}\n\n"
-        f"🆕 New round started!"
+        f"🎯 Result: {result}\n"
+        f"🏆 Winners: {winners}\n"
+        "🆕 New round started!"
     )
 
-# =============================
+# ==============================
 # APP START
-# =============================
+# ==============================
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("play", play))
 app.add_handler(CommandHandler("points", points))
 app.add_handler(CommandHandler("result", result))
+app.add_handler(CommandHandler("close", close))  # admin only
+app.add_handler(CallbackQueryHandler(button_play, pattern="^play_"))
 
 print("🤖 Bot is running...")
 app.run_polling()
