@@ -40,7 +40,25 @@ def time_left():
     delta = current_round["ends_at"] - datetime.utcnow()
     seconds = max(0, int(delta.total_seconds()))
     return seconds // 60, seconds % 60
+def check_and_close_round():
+    if datetime.utcnow() < current_round["ends_at"]:
+        return None  # round still running
 
+    result = generate_result()
+    current_round["result"] = result
+
+    winners = 0
+    for uid, g in guesses.items():
+        if g == result:
+            users[uid] += POINTS_PER_WIN
+            winners += 1
+
+    guesses.clear()
+    current_round["round_id"] += 1
+    current_round["ends_at"] = datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES)
+    current_round["result"] = None
+
+    return result, winners
 def number_keyboard():
     keyboard = [
         [
