@@ -28,7 +28,24 @@ current_round = {
     "ends_at": datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES),
 }
 
-# =============================
+def number_keyboard():
+    keyboard = [
+        [
+            InlineKeyboardButton("0", callback_data="play_0"),
+            InlineKeyboardButton("1", callback_data="play_1"),
+            InlineKeyboardButton("2", callback_data="play_2"),
+            InlineKeyboardButton("3", callback_data="play_3"),
+            InlineKeyboardButton("4", callback_data="play_4"),
+        ],
+        [
+            InlineKeyboardButton("5", callback_data="play_5"),
+            InlineKeyboardButton("6", callback_data="play_6"),
+            InlineKeyboardButton("7", callback_data="play_7"),
+            InlineKeyboardButton("8", callback_data="play_8"),
+            InlineKeyboardButton("9", callback_data="play_9"),
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard) =============================
 # HELPERS
 # =============================
 def generate_result():
