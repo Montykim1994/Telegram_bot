@@ -1,173 +1,188 @@
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-)
 import os
 import random
+import asyncio
+import psycopg2
+import psycopg2.extras
 from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# =========================
-# CONFIG
-# =========================
-TOKEN = os.getenv("BOT_TOKEN")  # Set in Railway
-ADMIN_ID = 891656290
+POSTGRES_URL = os.getenv("POSTGRES_URL")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-ROUND_DURATION_MINUTES = 10
+# ------------
+# DB FUNCTIONS
+# ------------
+
+def get_db():
+    conn = psycopg2.connect(POSTGRES_URL, sslmode="require")
+    return conn
+
+def init_db():
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id BIGINT PRIMARY KEY,
+        points INT DEFAULT 0
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS rounds (
+        round_id SERIAL PRIMARY KEY,
+        result INT,
+        ends_at TIMESTAMP
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS guesses (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT,
+        round_id INT,
+        guess INT,
+        FOREIGN KEY (round_id) REFERENCES rounds (round_id)
+    );
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+# --------------------------
+# GAME LOGIC FUNCTIONS
+# --------------------------
+
 POINTS_PER_WIN = 10
 
-# =========================
-# GAME STATE (memory)
-# =========================
-users = {}      # user_id -> points
-guesses = {}    # user_id -> guessed number
-
-current_round = {
-    "round_id": 1,
-    "ends_at": datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES),
-    "result": None,
-}
-
-# =========================
-# HELPERS
-# =========================
-def generate_result():
-    return random.randint(0, 9)
-
-def time_left():
-    delta = current_round["ends_at"] - datetime.utcnow()
-    seconds = max(0, int(delta.total_seconds()))
-    return seconds // 60, seconds % 60
-
-def check_and_close_round():
-    if current_round["result"] is not None:
-        return None
-
-    if datetime.utcnow() < current_round["ends_at"]:
-        return None
-
-    result = generate_result()
-    current_round["result"] = result
-
-    winners = 0
-    for uid, g in guesses.items():
-        if g == result:
-            users[uid] = users.get(uid, 0) + POINTS_PER_WIN
-            winners += 1
-
-    guesses.clear()
-    current_round["round_id"] += 1
-    current_round["ends_at"] = datetime.utcnow() + timedelta(minutes=ROUND_DURATION_MINUTES)
-    current_round["result"] = None
-
-    return result, winners
-
-def number_keyboard():
-    keyboard = [
-        [
-            InlineKeyboardButton("0", callback_data="0"),
-            InlineKeyboardButton("1", callback_data="1"),
-            InlineKeyboardButton("2", callback_data="2"),
-            InlineKeyboardButton("3", callback_data="3"),
-            InlineKeyboardButton("4", callback_data="4"),
-        ],
-        [
-            InlineKeyboardButton("5", callback_data="5"),
-            InlineKeyboardButton("6", callback_data="6"),
-            InlineKeyboardButton("7", callback_data="7"),
-            InlineKeyboardButton("8", callback_data="8"),
-            InlineKeyboardButton("9", callback_data="9"),
-        ],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-# =========================
-# COMMANDS
-# =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users.setdefault(update.effective_user.id, 0)
+    user_id = update.effective_user.id
 
-    closed = check_and_close_round()
-    if closed:
-        result, winners = closed
-        await update.message.reply_text(
-            f"🏁 Previous round closed\n🎯 Result: {result}\n🏆 Winners: {winners}"
-        )
+    conn = get_db()
+    cur = conn.cursor()
 
-    m, s = time_left()
+    cur.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING;", (user_id,))
+    conn.commit()
+    conn.close()
+
     await update.message.reply_text(
-        "🎮 Number Guess Game (Points Only)\n\n"
-        "⚠️ Free game. No money. Random system.\n\n"
-        f"🆔 Round: {current_round['round_id']}\n"
-        f"⏳ Time left: {m}m {s}s\n\n"
-        "Choose ONE number (0–9):",
-        reply_markup=number_keyboard(),
+        "🎮 Welcome to the Number Guess Game!\n\n"
+        "Guess a number between 0–9.\n"
+        "You win points if your number matches the round result!"
     )
 
-async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pts = users.get(update.effective_user.id, 0)
-    await update.message.reply_text(f"⭐ Your points: {pts}")
+async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = []
+    row = []
+    for i in range(10):
+        row.append(InlineKeyboardButton(str(i), callback_data=f"guess_{i}"))
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
 
-async def close_round(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Not authorized.")
-        return
+    await update.message.reply_text("Choose your number:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    closed = check_and_close_round()
-    if not closed:
-        await update.message.reply_text("⏳ Round still running.")
-        return
 
-    result, winners = closed
-    await update.message.reply_text(
-        f"🔒 Round closed manually\n🎯 Result: {result}\n🏆 Winners: {winners}"
-    )
-
-# =========================
-# BUTTON HANDLER
-# =========================
-async def button_play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+    number = int(query.data.split("_")[1])
     user_id = query.from_user.id
-    users.setdefault(user_id, 0)
 
-    closed = check_and_close_round()
-    if closed:
-        result, winners = closed
-        await query.message.reply_text(
-            f"🏁 Round closed\n🎯 Result: {result}\n🏆 Winners: {winners}"
-        )
-        return
+    conn = get_db()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-    if user_id in guesses:
-        await query.edit_message_text("❗ You already played this round.")
-        return
+    # find active round
+    cur.execute("SELECT * FROM rounds WHERE ends_at > NOW() ORDER BY round_id DESC LIMIT 1;")
+    round_data = cur.fetchone()
 
-    guess = int(query.data)
-    guesses[user_id] = guess
+    if not round_data:
+        # create new round
+        new_end = datetime.utcnow() + timedelta(minutes=3)
+        cur.execute("INSERT INTO rounds (ends_at) VALUES (%s) RETURNING round_id;", (new_end,))
+        round_id = cur.fetchone()["round_id"]
+        conn.commit()
+    else:
+        round_id = round_data["round_id"]
 
-    await query.edit_message_text(
-        f"✅ Your guess **{guess}** is locked.\n\n"
-        f"🆔 Round: {current_round['round_id']}"
+    # Save guess
+    cur.execute(
+        "INSERT INTO guesses (user_id, round_id, guess) VALUES (%s, %s, %s);",
+        (user_id, round_id, number)
     )
+    conn.commit()
 
-# =========================
-# APP START
-# =========================
-app = ApplicationBuilder().token(TOKEN).build()
+    await query.edit_message_text(f"👍 Your guess `{number}` is saved!")
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("points", points))
-app.add_handler(CommandHandler("close", close_round))
-app.add_handler(CallbackQueryHandler(button_play))
 
-print("🤖 Bot is running...")
-app.run_polling()
+async def check_round():
+    while True:
+        await asyncio.sleep(20)
+
+        conn = get_db()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+        # get expired round
+        cur.execute("SELECT * FROM rounds WHERE result IS NULL AND ends_at <= NOW();")
+        expired = cur.fetchall()
+
+        for round_item in expired:
+            round_id = round_item["round_id"]
+            result = random.randint(0, 9)
+
+            # update result
+            cur.execute("UPDATE rounds SET result=%s WHERE round_id=%s;", (result, round_id))
+
+            # find winners
+            cur.execute("SELECT user_id FROM guesses WHERE round_id=%s AND guess=%s;", (round_id, result))
+            winners = cur.fetchall()
+
+            # award points
+            for row in winners:
+                cur.execute("UPDATE users SET points = points + %s WHERE user_id=%s;", (POINTS_PER_WIN, row["user_id"]))
+
+            conn.commit()
+
+        conn.close()
+
+
+async def mypoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT points FROM users WHERE user_id=%s;", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    points = row[0] if row else 0
+    await update.message.reply_text(f"⭐ You have {points} points!")
+
+
+# --------------------------
+# MAIN APPLICATION START
+# --------------------------
+
+def main():
+    init_db()
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("play", play))
+    app.add_handler(CommandHandler("points", mypoints))
+    app.add_handler(CallbackQueryHandler(handle_guess))
+
+    # background task to check rounds
+    app.job_queue.run_repeating(lambda ctx: asyncio.create_task(check_round()), interval=20, first=2)
+
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
