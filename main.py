@@ -198,9 +198,145 @@ def main():
     app.add_handler(CommandHandler("play", play))
     app.add_handler(CommandHandler("points", mypoints))
     app.add_handler(CallbackQueryHandler(handle_guess))
-
+app.add_handler(CommandHandler("addpoints", addpoints))
+app.add_handler(CommandHandler("removepoints", removepoints))
+app.add_handler(CommandHandler("setpoints", setpoints))
+app.add_handler(CommandHandler("stats", stats))
     app.run_polling()
 
+# --------------------------
+# ADMIN PANEL
+# --------------------------
 
+ADMIN_ID = 891656290
+
+async def admin_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check if user is admin"""
+    user_id = update.effective_user.id
+    return user_id == ADMIN_ID
+
+
+async def addpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update, context):
+        return await update.message.reply_text("⛔ Unauthorized")
+
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /addpoints <user_id> <amount>")
+
+    user_id = int(context.args[0])
+    amount = int(context.args[1])
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET points = points + %s WHERE user_id = %s;", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f"✅ Added {amount} points to {user_id}")
+
+
+async def removepoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update, context):
+        return await update.message.reply_text("⛔ Unauthorized")
+
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /removepoints <user_id> <amount>")
+
+    user_id = int(context.args[0])
+    amount = int(context.args[1])
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET points = GREATEST(points - %s, 0) WHERE user_id = %s;", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f"❌ Removed {amount} points from {user_id}")
+
+
+async def setpoints(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update, context):
+        return await update.message.reply_text("⛔ Unauthorized")
+
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /setpoints <user_id> <amount>")
+
+    user_id = int(context.args[0])
+    amount = int(context.args[1])
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET points = %s WHERE user_id = %s;", (amount, user_id))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f"🔧 Set {user_id}'s points to {amount}")
+
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update, context):
+        return await update.message.reply_text("⛔ Unauthorized")
+
+    if not context.args:
+        return await update.message.reply_text("Usage: /broadcast <your message>")
+
+    msg = " ".join(context.args)
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM users;")
+    users = cur.fetchall()
+    conn.close()
+
+    for row in users:
+        try:
+            await context.bot.send_message(chat_id=row[0], text=f"📢 Admin Notice:\n\n{msg}")
+        except:
+            pass
+
+    await update.message.reply_text("📢 Broadcast sent!")
+
+
+async def forceresult(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update, context):
+        return await update.message.reply_text("⛔ Unauthorized")
+
+    if len(context.args) != 1:
+        return await update.message.reply_text("Usage: /forceresult <0-9>")
+
+    result = int(context.args[0])
+    if result < 0 or result > 9:
+        return await update.message.reply_text("❌ Invalid number")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    # update latest unfinished round
+    cur.execute("UPDATE rounds SET result = %s WHERE result IS NULL ORDER BY round_id DESC LIMIT 1;", (result,))
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f"⚠ Forced round result to {result}")
+
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await admin_only(update, context):
+        return await update.message.reply_text("⛔ Unauthorized")
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users;")
+    total_users = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM rounds;")
+    total_rounds = cur.fetchone()[0]
+
+    conn.close()
+
+    await update.message.reply_text(
+        f"📊 **Bot Stats**\n"
+        f"👥 Users: {total_users}\n"
+        f"🎲 Rounds: {total_rounds}\n"
+    )
 if __name__ == "__main__":
     main()
