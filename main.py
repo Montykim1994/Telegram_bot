@@ -126,25 +126,40 @@ async def check_round(context: ContextTypes.DEFAULT_TYPE):
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
-    cur.execute("SELECT * FROM rounds WHERE result IS NULL AND ends_at <= NOW();")
-    expired = cur.fetchall()
+    # Process only ONE expired round at a time
+    cur.execute("""
+        SELECT * FROM rounds 
+        WHERE result IS NULL AND ends_at <= NOW()
+        ORDER BY round_id ASC
+        LIMIT 1;
+    """)
+    round_item = cur.fetchone()
 
-    for round_item in expired:
-        round_id = round_item["round_id"]
-        result = random.randint(0, 9)
+    if not round_item:
+        conn.close()
+        return
 
-        cur.execute("UPDATE rounds SET result=%s WHERE round_id=%s;", (result, round_id))
+    round_id = round_item["round_id"]
+    result = random.randint(0, 9)
 
-        cur.execute("SELECT user_id FROM guesses WHERE round_id=%s AND guess=%s;",
-                    (round_id, result))
-        winners = cur.fetchall()
+    # update round result
+    cur.execute("UPDATE rounds SET result=%s WHERE round_id=%s;", (result, round_id))
 
-        for row in winners:
-            cur.execute("UPDATE users SET points = points + %s WHERE user_id=%s;",
-                        (POINTS_PER_WIN, row["user_id"]))
+    # find winners
+    cur.execute("""
+        SELECT user_id FROM guesses 
+        WHERE round_id=%s AND guess=%s;
+    """, (round_id, result))
+    winners = cur.fetchall()
 
-        conn.commit()
+    # award points
+    for row in winners:
+        cur.execute(
+            "UPDATE users SET points = points + %s WHERE user_id=%s;",
+            (POINTS_PER_WIN, row["user_id"])
+        )
 
+    conn.commit()
     conn.close()
 
 
