@@ -634,19 +634,24 @@ async def cancel_bet(update: Update, context):
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show admin controls."""
+
+    # Check admin
     if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ You are not authorized.")
+        return await update.callback_query.answer("Access denied ❌", show_alert=True)
+
+    query = update.callback_query
+    await query.answer()
 
     keyboard = [
         [InlineKeyboardButton("📌 Set Result", callback_data="admin_set_result")],
-        [InlineKeyboardButton("⛔ Close Baaji Now", callback_data="admin_close_baaji")],
-        [InlineKeyboardButton("🚀 Open Next Baaji", callback_data="admin_open_next")],
+        [InlineKeyboardButton("➖ Close Baji", callback_data="admin_close_baji")],
+        [InlineKeyboardButton("🚀 Open Next Baji", callback_data="admin_open_next_baji")],
         [InlineKeyboardButton("💰 Add Points", callback_data="admin_add_points")],
-        [InlineKeyboardButton("💵 Deduct Points", callback_data="admin_deduct_points")],
+        [InlineKeyboardButton("🪙 Deduct Points", callback_data="admin_deduct_points")],
         [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
     ]
 
-    await update.message.reply_text(
+    await query.edit_message_text(
         "🔧 *ADMIN PANEL*\nChoose an option:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
