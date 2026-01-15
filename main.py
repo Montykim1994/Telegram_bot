@@ -1,15 +1,22 @@
+# =====================================================
+# IMPORTS
+# =====================================================
+
 import os
 import asyncio
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta, date, time
+
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
+
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes, JobQueue
+    MessageHandler, filters, ContextTypes
 )
+
 
 # =====================================================
 # CONFIGURATION
@@ -17,33 +24,46 @@ from telegram.ext import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 POSTGRES_URL = os.getenv("POSTGRES_URL")
+ADMIN_ID = 891656290  # Your Telegram ID
 
-ADMIN_ID = 891656290   # <-- YOUR TELEGRAM ID
-
-# Maximum limits
+# Game limits
 MAX_BETS_PER_BAAJI = 10
 MIN_BET = 5
 MAX_BET = 5000
 MIN_ADD_POINTS = 50
 
+# Fixed Baaji closing times (24h format)
+BAAJI_CLOSE_TIMES = [
+    time(10, 20),   # 1st
+    time(11, 50),   # 2nd
+    time(13, 20),   # 3rd
+    time(14, 55),   # 4th
+    time(16, 20),   # 5th
+    time(17, 50),   # 6th
+    time(19, 20),   # 7th
+    time(20, 50)    # 8th
+]
+
+
 # =====================================================
-# DATABASE CONNECTION
+# DATABASE CONNECTION HELPERS
 # =====================================================
 
 def get_db():
-    """Create a new PostgreSQL Connection"""
+    """
+    Returns a safe PostgreSQL connection with SSL required.
+    """
     return psycopg2.connect(POSTGRES_URL, sslmode="require")
 
 
-# =====================================================
-# INITIALIZE TABLES
-# =====================================================
-
 def init_db():
+    """
+    Initializes required tables if they don't exist.
+    """
     conn = get_db()
     cur = conn.cursor()
 
-    # Users table
+    # User table
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id BIGINT PRIMARY KEY,
@@ -81,25 +101,16 @@ def init_db():
 
     conn.commit()
     conn.close()
-    # =====================================================
-# BAAJI TIMING & SCHEDULER FUNCTIONS
+
+
+# =====================================================
+# BAAJI HANDLING LOGIC
 # =====================================================
 
-# Fixed daily baaji closing times (24-hour format)
-BAAJI_CLOSE_TIMES = [
-    time(10, 20),   # 1st
-    time(11, 50),   # 2nd
-    time(13, 20),   # 3rd
-    time(14, 55),   # 4th
-    time(16, 20),   # 5th
-    time(17, 50),   # 6th
-    time(19, 20),   # 7th
-    time(20, 50)    # 8th
-]
-
-
 def get_current_baaji():
-    """Get the currently open baaji or None."""
+    """
+    Get the currently open baaji (if any).
+    """
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
@@ -115,23 +126,22 @@ def get_current_baaji():
 
 
 def create_new_baaji():
-    """Open the next baaji of the day automatically."""
+    """
+    Creates the next baaji of the day when required.
+    """
     today = date.today()
-
     conn = get_db()
     cur = conn.cursor()
 
-    # Count baajis already created today
     cur.execute("SELECT COUNT(*) FROM baaji WHERE date=%s;", (today,))
-    count = cur.fetchone()[0]
+    count_today = cur.fetchone()[0]
 
-    if count >= 8:
+    if count_today >= 8:
         conn.close()
-        return None  # All baajis for today completed
+        return None  # All Baajis already created
 
-    baaji_number = count + 1
-
-    close_time = datetime.combine(today, BAAJI_CLOSE_TIMES[count])
+    baaji_number = count_today + 1
+    close_time = datetime.combine(today, BAAJI_CLOSE_TIMES[count_today])
 
     cur.execute("""
         INSERT INTO baaji (date, baaji_number, status, close_time)
@@ -147,11 +157,13 @@ def create_new_baaji():
 
 
 async def announce_new_baaji(context: ContextTypes.DEFAULT_TYPE, baaji_number):
-    """Send a broadcast when new baaji opens."""
+    """
+    Send broadcast message to all users when a new baaji opens.
+    """
     msg = (
-        f"🎯 *{baaji_number}ᵗʰ Baaji OPEN!*\n"
-        f"Place your bets now! Maximum 10 bets allowed.\n"
-        f"Closing Time: {BAAJI_CLOSE_TIMES[baaji_number-1].strftime('%I:%M %p')}"
+        f"🎯 *Baaji {baaji_number} OPEN!*\n"
+        f"Place your bets now.\n"
+        f"Closes at: {BAAJI_CLOSE_TIMES[baaji_number - 1].strftime('%I:%M %p')}"
     )
 
     conn = get_db()
@@ -160,17 +172,17 @@ async def announce_new_baaji(context: ContextTypes.DEFAULT_TYPE, baaji_number):
     users = cur.fetchall()
     conn.close()
 
-    for row in users:
+    for u in users:
         try:
-            await context.bot.send_message(chat_id=row[0], text=msg, parse_mode="Markdown")
+            await context.bot.send_message(chat_id=u[0], text=msg, parse_mode="Markdown")
         except:
             pass
 
 
 async def auto_close_baaji(context: ContextTypes.DEFAULT_TYPE):
-    """Automatically close any active baaji when close_time passes."""
-    now = datetime.now()
-
+    """
+    Automatically closes any open baaji once its time passes.
+    """
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
@@ -179,70 +191,68 @@ async def auto_close_baaji(context: ContextTypes.DEFAULT_TYPE):
         WHERE status='open' AND close_time <= NOW();
     """)
 
-    to_close = cur.fetchall()
+    expired = cur.fetchall()
 
-    for b in to_close:
-        # Mark as closed
+    for b in expired:
         cur.execute("UPDATE baaji SET status='closed' WHERE id=%s;", (b["id"],))
         conn.commit()
 
-        # Broadcast closing msg
+        # Notify admin
         try:
             await context.bot.send_message(
                 chat_id=ADMIN_ID,
-                text=f"⏳ Baaji {b['baaji_number']} closed. Waiting for result."
+                text=f"⏳ Baaji {b['baaji_number']} closed. Awaiting result."
             )
         except:
             pass
-
-        # Broadcast to users
-        cur.execute("SELECT user_id FROM users;")
-        users = cur.fetchall()
-        for u in users:
-            try:
-                await context.bot.send_message(
-                    chat_id=u[0],
-                    text=f"⏳ Betting closed for Baaji {b['baaji_number']}.\nWaiting for result…"
-                )
-            except:
-                pass
 
     conn.close()
 
 
 async def midnight_reset(context: ContextTypes.DEFAULT_TYPE):
-    """Reset baaji count automatically at midnight."""
+    """
+    Resets daily Baaji schedule at midnight.
+    """
     now = datetime.now().time()
+
     if now.hour == 0 and now.minute < 2:
-        # Delete future baajis & open first baaji for new day
         conn = get_db()
         cur = conn.cursor()
-        today = date.today()
 
+        today = date.today()
         cur.execute("DELETE FROM baaji WHERE date=%s;", (today,))
         conn.commit()
         conn.close()
 
-        first_id = create_new_baaji()
-        if first_id:
+        new_id = create_new_baaji()
+        if new_id:
             await announce_new_baaji(context, 1)
-            # =====================================================
+# =====================================================
 # USER REGISTRATION & WALLET SYSTEM
 # =====================================================
 
 async def ensure_user(update: Update):
-    """Make sure user exists in DB before any action."""
+    """
+    Ensures the user exists in the database before any action.
+    """
     user_id = update.effective_user.id
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("INSERT INTO users (user_id) VALUES (%s) ON CONFLICT DO NOTHING;", (user_id,))
+    cur.execute("""
+        INSERT INTO users (user_id)
+        VALUES (%s)
+        ON CONFLICT DO NOTHING;
+    """, (user_id,))
+
     conn.commit()
     conn.close()
 
 
 async def wallet_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show user wallet balance and wallet menu buttons."""
+    """
+    Shows the user's wallet balance and menu options.
+    """
     await ensure_user(update)
     user_id = update.effective_user.id
 
@@ -259,98 +269,107 @@ async def wallet_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅ Main Menu", callback_data="main_menu")]
     ]
 
-    await update.message.reply_text(
+    await update.callback_query.message.edit_text(
         f"💰 *Your Wallet: {balance} points*\n\n"
         f"Minimum Add: {MIN_ADD_POINTS}\n"
-        f"Redeem allowed: Once per day",
+        f"Redeem allowed once per day.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 # =====================================================
-# ADD POINTS (User Request)
+# ADD POINTS (USER REQUEST)
 # =====================================================
 
 async def handle_add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User taps Add Points button."""
-    user_id = update.callback_query.from_user.id
-    await update.callback_query.answer()
+    """
+    User clicked "Add Points" button.
+    """
+    query = update.callback_query
+    await query.answer()
 
-    await update.callback_query.message.reply_text(
+    await query.message.edit_text(
         "💳 *ADD POINTS*\n\n"
         "Send the amount you want to add.\n"
-        f"Minimum: {MIN_ADD_POINTS} points.\n\n"
+        f"Minimum: {MIN_ADD_POINTS}\n\n"
         "_Admin will approve and credit manually._",
         parse_mode="Markdown"
     )
 
+    # Set state flag
     context.user_data["awaiting_add_amount"] = True
 
 
 async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User sends amount to add, forward to admin for approval."""
+    """
+    Processes user's typed add amount.
+    """
     if not context.user_data.get("awaiting_add_amount"):
-        return
+        return  # Ignore unrelated messages
 
     user_id = update.effective_user.id
-    amount_text = update.message.text
+    amount_text = update.message.text.strip()
 
     if not amount_text.isdigit():
-        return await update.message.reply_text("❌ Enter a valid number")
+        return await update.message.reply_text("❌ Enter a valid number.")
 
     amount = int(amount_text)
 
     if amount < MIN_ADD_POINTS:
         return await update.message.reply_text(
-            f"❌ Minimum add amount is {MIN_ADD_POINTS} points."
+            f"❌ Minimum add amount is {MIN_ADD_POINTS}."
         )
 
-    # Forward request to admin
     await update.message.reply_text(
-        "📨 Your add-points request has been sent to admin.\n"
-        "Please wait for approval."
+        "📨 Your add request has been sent to admin.\nPlease wait for approval."
     )
 
+    # Notify Admin
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
-            f"📥 *Add Points Request*\n"
-            f"User: `{user_id}`\n"
+            f"📥 *Add Request*\n"
+            f"User ID: `{user_id}`\n"
             f"Amount: `{amount}`\n\n"
-            f"Use: /addpoints {user_id} {amount}"
+            f"Use command:\n"
+            f"/addpoints {user_id} {amount}"
         ),
         parse_mode="Markdown"
     )
 
+    # Clear state
     context.user_data["awaiting_add_amount"] = False
 
 
 # =====================================================
-# REDEEM POINTS (User Request)
+# REDEEM POINTS (USER REQUEST)
 # =====================================================
 
 async def handle_redeem_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User taps Redeem Points."""
-    await update.callback_query.answer()
-    user_id = update.callback_query.from_user.id
+    """
+    User clicked Redeem Points.
+    """
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
 
     conn = get_db()
     cur = conn.cursor()
 
-    # Check last redeem date
     cur.execute("SELECT wallet, last_redeem FROM users WHERE user_id=%s;", (user_id,))
     wallet, last_redeem = cur.fetchone()
+    conn.close()
 
     today = date.today()
     if last_redeem == today:
-        return await update.callback_query.message.reply_text(
-            "❌ You have already redeemed today.\nTry again tomorrow."
+        return await query.message.reply_text(
+            "⚠️ You already redeemed today.\nTry again tomorrow."
         )
 
-    await update.callback_query.message.reply_text(
+    await query.message.edit_text(
         "💵 *REDEEM POINTS*\n\n"
-        "Send the amount you want to redeem.",
+        "Enter amount to redeem.",
         parse_mode="Markdown"
     )
 
@@ -358,12 +377,14 @@ async def handle_redeem_points(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def process_redeem_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user redeem request."""
+    """
+    User sends redeem amount.
+    """
     if not context.user_data.get("awaiting_redeem_amount"):
         return
 
     user_id = update.effective_user.id
-    amount_text = update.message.text
+    amount_text = update.message.text.strip()
 
     if not amount_text.isdigit():
         return await update.message.reply_text("❌ Enter a valid number.")
@@ -374,43 +395,52 @@ async def process_redeem_amount(update: Update, context: ContextTypes.DEFAULT_TY
     cur = conn.cursor()
     cur.execute("SELECT wallet FROM users WHERE user_id=%s;", (user_id,))
     wallet = cur.fetchone()[0]
+    conn.close()
 
     if amount > wallet:
-        conn.close()
         return await update.message.reply_text("❌ Not enough balance.")
 
-    # Notify admin for approval
-    await update.message.reply_text("📨 Redeem request sent to admin.")
+    # Notify admin
+    await update.message.reply_text("📤 Redeem request sent to admin.")
 
     await context.bot.send_message(
         chat_id=ADMIN_ID,
         text=(
             f"📤 *Redeem Request*\n"
-            f"User: `{user_id}`\n"
+            f"User ID: `{user_id}`\n"
             f"Amount: `{amount}`\n\n"
-            f"Use: /deductpoints {user_id} {amount}"
+            f"Use:\n"
+            f"/deductpoints {user_id} {amount}"
         ),
         parse_mode="Markdown"
     )
 
-    conn.close()
     context.user_data["awaiting_redeem_amount"] = False
-    # =====================================================
-# BETTING SYSTEM — SINGLE & PATTI
+# =====================================================
+# PLAY MENU — GAME TYPE SELECTION
 # =====================================================
 
 async def play_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show game type options: Single or Patti."""
+    """
+    Shows game type options: Single / Patti.
+    """
     await ensure_user(update)
+
+    query = update.callback_query
+    if query:
+        await query.answer()
+        message = query.message
+    else:
+        message = update.message
 
     keyboard = [
         [InlineKeyboardButton("1️⃣ Single Digit", callback_data="play_single")],
-        [InlineKeyboardButton("3️⃣ Patti", callback_data="play_patti")],
-        [InlineKeyboardButton("🎯 Current Baaji Status", callback_data="baaji_status")],
+        [InlineKeyboardButton("3️⃣ Patti (3-Digit)", callback_data="play_patti")],
+        [InlineKeyboardButton("🎯 Baaji Status", callback_data="baaji_status")],
         [InlineKeyboardButton("⬅ Main Menu", callback_data="main_menu")]
     ]
 
-    await update.message.reply_text(
+    await message.reply_text(
         "🎮 *SELECT GAME TYPE*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -418,12 +448,15 @@ async def play_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # =====================================================
-# SINGLE DIGIT — SELECT NUMBER
+# SINGLE DIGIT — NUMBER BUTTONS (0–9)
 # =====================================================
 
 async def handle_single(update: Update, context):
-    """Show number buttons 0–9."""
-    await update.callback_query.answer()
+    """
+    Show digit buttons 0–9.
+    """
+    query = update.callback_query
+    await query.answer()
 
     keyboard = [
         [
@@ -437,24 +470,27 @@ async def handle_single(update: Update, context):
         [InlineKeyboardButton("⬅ Back", callback_data="play_menu")]
     ]
 
-    await update.callback_query.message.reply_text(
-        "🔢 *Choose your single digit (0–9)*",
+    await query.message.edit_text(
+        "🔢 *Choose single digit (0–9)*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 async def handle_single_digit(update: Update, context):
-    """User clicks a single digit button."""
-    await update.callback_query.answer()
-    data = update.callback_query.data
-    digit = int(data.split("_")[2])
+    """
+    User selects a single digit. Ask for amount.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    digit = int(query.data.split("_")[2])
 
     context.user_data["pending_bet_type"] = "single"
     context.user_data["pending_digit"] = digit
 
-    await update.callback_query.message.reply_text(
-        f"💰 Enter bet amount for digit *{digit}* (5–5000):",
+    await query.message.edit_text(
+        f"💰 Enter your bet amount for digit *{digit}* (5–5000):",
         parse_mode="Markdown"
     )
 
@@ -462,17 +498,20 @@ async def handle_single_digit(update: Update, context):
 
 
 # =====================================================
-# PATTI — ENTER 3-DIGIT NUMBER
+# PATTI (3-DIGIT) INPUT
 # =====================================================
 
 async def handle_patti(update: Update, context):
-    """Ask user to enter 3-digit patti."""
-    await update.callback_query.answer()
+    """
+    Ask user for 3-digit Patti.
+    """
+    query = update.callback_query
+    await query.answer()
 
     context.user_data["pending_bet_type"] = "patti"
 
-    await update.callback_query.message.reply_text(
-        "🎰 *Enter your Patti (000–999):*",
+    await query.message.edit_text(
+        "🎰 *Enter 3-Digit Patti (000–999):*",
         parse_mode="Markdown"
     )
 
@@ -480,14 +519,18 @@ async def handle_patti(update: Update, context):
 
 
 async def process_patti_input(update: Update, context):
-    """User enters Patti digits."""
+    """
+    Validate user Patti input.
+    """
     if not context.user_data.get("awaiting_patti_input"):
-        return
+        return  # Ignore messages not part of this flow
 
     patti = update.message.text.strip()
 
     if not patti.isdigit() or not (0 <= int(patti) <= 999):
-        return await update.message.reply_text("❌ Enter a valid Patti between 000–999")
+        return await update.message.reply_text(
+            "❌ Invalid Patti. Enter a number between 000 and 999."
+        )
 
     context.user_data["pending_digit"] = int(patti)
     context.user_data["awaiting_patti_input"] = False
@@ -501,37 +544,43 @@ async def process_patti_input(update: Update, context):
 
 
 # =====================================================
-# PROCESS BET AMOUNT + VALIDATION
+# PROCESS BET AMOUNT (VALIDATION)
 # =====================================================
 
 async def process_bet_amount(update: Update, context):
-    """Handles amount validation and then shows PLACE/CANCEL buttons."""
+    """
+    Validate bet amount and show confirmation buttons.
+    """
     if not context.user_data.get("awaiting_bet_amount"):
-        return
+        return  # Ignore unrelated messages
 
-    amount_text = update.message.text
+    amount_text = update.message.text.strip()
+
     if not amount_text.isdigit():
         return await update.message.reply_text("❌ Enter a valid number.")
 
     amount = int(amount_text)
 
     if amount < MIN_BET:
-        return await update.message.reply_text(f"❌ Minimum bet is {MIN_BET}")
+        return await update.message.reply_text(
+            f"❌ Minimum bet amount is {MIN_BET}."
+        )
 
     if amount > MAX_BET:
-        return await update.message.reply_text(f"❌ Maximum bet is {MAX_BET}")
+        return await update.message.reply_text(
+            f"❌ Maximum bet amount is {MAX_BET}."
+        )
 
-    # Save temporary bet amount
+    # Save amount
     context.user_data["pending_amount"] = amount
     context.user_data["awaiting_bet_amount"] = False
 
-    # Show confirmation menu
-    bet_type = context.user_data["pending_bet_type"]
+    btype = context.user_data["pending_bet_type"]
     digit = context.user_data["pending_digit"]
 
-    confirm_text = (
-        f"📝 *Confirm Your Bet*\n\n"
-        f"Type: `{bet_type}`\n"
+    msg = (
+        f"📝 *Confirm Bet*\n\n"
+        f"Type: `{btype}`\n"
         f"Digit: `{digit}`\n"
         f"Amount: `{amount}`\n"
     )
@@ -542,7 +591,7 @@ async def process_bet_amount(update: Update, context):
     ]
 
     await update.message.reply_text(
-        confirm_text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
+        msg, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -551,67 +600,70 @@ async def process_bet_amount(update: Update, context):
 # =====================================================
 
 async def place_bet_final(update: Update, context):
-    """User clicks PLACE BET — deduct wallet, save bet."""
-    await update.callback_query.answer()
-    user_id = update.callback_query.from_user.id
+    """
+    Deduct wallet, save bet, confirm success.
+    """
+    query = update.callback_query
+    await query.answer()
 
-    bet_type = context.user_data.get("pending_bet_type")
+    user_id = query.from_user.id
+
+    btype = context.user_data.get("pending_bet_type")
     digit = context.user_data.get("pending_digit")
     amount = context.user_data.get("pending_amount")
 
-    if bet_type is None or digit is None or amount is None:
-        return await update.callback_query.message.reply_text("❌ Bet error.")
+    if None in (btype, digit, amount):
+        return await query.message.edit_text("❌ Bet information missing.")
 
-    # Check for active baaji
     baaji = get_current_baaji()
     if not baaji:
-        return await update.callback_query.message.reply_text("❌ No active Baaji available.")
+        return await query.message.edit_text("❌ No active Baaji at the moment.")
 
     baaji_id = baaji["id"]
 
-    # Check wallet balance
     conn = get_db()
     cur = conn.cursor()
 
+    # check user's wallet
     cur.execute("SELECT wallet FROM users WHERE user_id=%s;", (user_id,))
     wallet = cur.fetchone()[0]
 
     if wallet < amount:
         conn.close()
-        return await update.callback_query.message.reply_text("❌ Not enough balance.")
+        return await query.message.edit_text("❌ Not enough balance.")
 
-    # Check max bets for this baaji
-    cur.execute(
-        "SELECT COUNT(*) FROM bets WHERE user_id=%s AND baaji_id=%s;",
-        (user_id, baaji_id)
-    )
-    bet_count = cur.fetchone()[0]
+    # check max bets on this baaji
+    cur.execute("""
+        SELECT COUNT(*) FROM bets
+        WHERE user_id=%s AND baaji_id=%s;
+    """, (user_id, baaji_id))
+    user_bet_count = cur.fetchone()[0]
 
-    if bet_count >= MAX_BETS_PER_BAAJI:
+    if user_bet_count >= MAX_BETS_PER_BAAJI:
         conn.close()
-        return await update.callback_query.message.reply_text(
-            f"❌ Maximum {MAX_BETS_PER_BAAJI} bets allowed per Baaji."
+        return await query.message.edit_text(
+            f"⚠️ Max {MAX_BETS_PER_BAAJI} bets allowed per Baaji."
         )
 
-    # Deduct wallet
+    # Deduct wallet, save bet
     new_wallet = wallet - amount
-    cur.execute("UPDATE users SET wallet=%s WHERE user_id=%s;", (new_wallet, user_id))
 
-    # Save bet
-    cur.execute(
-        "INSERT INTO bets (user_id, baaji_id, type, digit, amount) VALUES (%s, %s, %s, %s, %s);",
-        (user_id, baaji_id, bet_type, digit, amount)
-    )
+    cur.execute("UPDATE users SET wallet=%s WHERE user_id=%s;",
+                (new_wallet, user_id))
+
+    cur.execute("""
+        INSERT INTO bets (user_id, baaji_id, type, digit, amount)
+        VALUES (%s, %s, %s, %s, %s);
+    """, (user_id, baaji_id, btype, digit, amount))
 
     conn.commit()
     conn.close()
 
-    # Confirmation message
-    await update.callback_query.message.reply_text(
+    await query.message.edit_text(
         f"✅ Bet Placed!\nDigit: {digit}\nAmount: {amount}\nNew Wallet: {new_wallet}"
     )
 
-    # Reset pending states
+    # clear pending state
     context.user_data["pending_bet_type"] = None
     context.user_data["pending_digit"] = None
     context.user_data["pending_amount"] = None
@@ -622,57 +674,34 @@ async def place_bet_final(update: Update, context):
 # =====================================================
 
 async def cancel_bet(update: Update, context):
-    await update.callback_query.answer()
+    """
+    Cancels pending bet and clears state.
+    """
+    query = update.callback_query
+    await query.answer()
+
     context.user_data["pending_bet_type"] = None
     context.user_data["pending_digit"] = None
     context.user_data["pending_amount"] = None
 
-    await update.callback_query.message.reply_text("❌ Bet cancelled.")
-    # =====================================================
-# ADMIN PANEL COMMANDS
+    await query.message.edit_text("❌ Bet cancelled.")
 # =====================================================
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show admin controls."""
-
-    # Check admin
-    if update.effective_user.id != ADMIN_ID:
-        return await update.callback_query.answer("Access denied ❌", show_alert=True)
-
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [
-        [InlineKeyboardButton("📌 Set Result", callback_data="admin_set_result")],
-        [InlineKeyboardButton("➖ Close Baji", callback_data="admin_close_baji")],
-        [InlineKeyboardButton("🚀 Open Next Baji", callback_data="admin_open_next_baji")],
-        [InlineKeyboardButton("💰 Add Points", callback_data="admin_add_points")],
-        [InlineKeyboardButton("🪙 Deduct Points", callback_data="admin_deduct_points")],
-        [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
-    ]
-
-    await query.edit_message_text(
-        "🔧 *ADMIN PANEL*\nChoose an option:",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# =====================================================
-# CLOSE BAAJI NOW (Admin override)
+# ADMIN — CLOSE BAAJI MANUALLY
 # =====================================================
 
 async def admin_close_baaji(update: Update, context):
-    """Admin manually closes the current baaji."""
-    await update.callback_query.answer()
-    user_id = update.callback_query.from_user.id
+    """
+    Admin manually closes the current Baaji.
+    """
+    query = update.callback_query
+    await query.answer()
 
-    if user_id != ADMIN_ID:
-        return await update.callback_query.message.reply_text("❌ Unauthorized.")
+    if query.from_user.id != ADMIN_ID:
+        return await query.message.edit_text("❌ Unauthorized.")
 
     baaji = get_current_baaji()
     if not baaji:
-        return await update.callback_query.message.reply_text("❌ No active baaji.")
+        return await query.message.edit_text("❌ No active Baaji.")
 
     conn = get_db()
     cur = conn.cursor()
@@ -680,38 +709,42 @@ async def admin_close_baaji(update: Update, context):
     conn.commit()
     conn.close()
 
-    await update.callback_query.message.reply_text(
+    await query.message.edit_text(
         f"⛔ Baaji {baaji['baaji_number']} closed manually."
     )
 
 
 # =====================================================
-# ADMIN — ENTER RESULT FLOW
+# ADMIN — SET RESULT (PATTI)
 # =====================================================
 
 async def admin_set_result_start(update: Update, context):
-    """Admin chooses to enter result."""
-    await update.callback_query.answer()
+    """
+    Prompt admin to enter Patti result.
+    """
+    query = update.callback_query
+    await query.answer()
 
-    if update.callback_query.from_user.id != ADMIN_ID:
-        return await update.callback_query.message.reply_text("❌ Unauthorized.")
+    if query.from_user.id != ADMIN_ID:
+        return await query.message.edit_text("❌ Unauthorized.")
 
     baaji = get_current_baaji()
-
     if not baaji:
-        return await update.callback_query.message.reply_text("❌ No baaji awaiting result.")
+        return await query.message.edit_text("❌ No Baaji awaiting result.")
 
-    await update.callback_query.message.reply_text(
-        f"🎯 *Enter 3-digit Patti result for Baaji {baaji['baaji_number']}*\n"
+    context.user_data["awaiting_admin_result"] = True
+
+    await query.message.edit_text(
+        f"🎯 Enter Patti Result (3 digits) for Baaji {baaji['baaji_number']}\n"
         f"Example: 578",
         parse_mode="Markdown"
     )
 
-    context.user_data["awaiting_admin_result"] = True
-
 
 async def admin_process_result(update: Update, context):
-    """Admin sends patti result (3-digit)."""
+    """
+    Admin sends Patti result — process winners.
+    """
     if not context.user_data.get("awaiting_admin_result"):
         return
 
@@ -720,15 +753,16 @@ async def admin_process_result(update: Update, context):
         return await update.message.reply_text("❌ Unauthorized.")
 
     patti = update.message.text.strip()
+
     if not patti.isdigit() or not (0 <= int(patti) <= 999):
-        return await update.message.reply_text("❌ Enter valid patti between 000–999.")
+        return await update.message.reply_text("❌ Enter valid Patti (000-999).")
 
     patti_value = int(patti)
-    single_value = sum(map(int, patti.zfill(3))) % 10  # auto single calc
+    single_value = sum(map(int, patti.zfill(3))) % 10
 
     baaji = get_current_baaji()
     if not baaji:
-        return await update.message.reply_text("❌ No active baaji.")
+        return await update.message.reply_text("❌ No active Baaji.")
 
     baaji_id = baaji["id"]
 
@@ -736,28 +770,29 @@ async def admin_process_result(update: Update, context):
     cur = conn.cursor()
 
     # Save results
-    cur.execute(
-        "UPDATE baaji SET patti_result=%s, single_result=%s, status='resulted' WHERE id=%s;",
-        (patti_value, single_value, baaji_id)
-    )
+    cur.execute("""
+        UPDATE baaji SET patti_result=%s, single_result=%s, status='resulted'
+        WHERE id=%s;
+    """, (patti_value, single_value, baaji_id))
 
-    # Fetch bets for this baaji
-    cur.execute(
-        "SELECT user_id, type, digit, amount FROM bets WHERE baaji_id=%s;",
-        (baaji_id,)
-    )
+    # Fetch bets for this Baaji
+    cur.execute("""
+        SELECT user_id, type, digit, amount
+        FROM bets WHERE baaji_id=%s;
+    """, (baaji_id,))
+
     all_bets = cur.fetchall()
 
-    winners = {}
+    winners = {}  # user_id -> win amount
 
-    # Calculate winners
+    # Evaluate win amounts
     for user_id, bet_type, bet_digit, amount in all_bets:
+        win_amount = 0
+
         if bet_type == "single" and bet_digit == single_value:
             win_amount = amount * 9
         elif bet_type == "patti" and bet_digit == patti_value:
             win_amount = amount * 90
-        else:
-            win_amount = 0
 
         if win_amount > 0:
             winners[user_id] = winners.get(user_id, 0) + win_amount
@@ -772,12 +807,15 @@ async def admin_process_result(update: Update, context):
     conn.commit()
     conn.close()
 
-    # Notify winners
+    # Notify winners individually
     for user_id, win_amount in winners.items():
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"🏆 Congratulations!\nYou won {win_amount} points in Baaji {baaji['baaji_number']}!"
+                text=(
+                    f"🏆 Congratulations!\n"
+                    f"You won {win_amount} points in Baaji {baaji['baaji_number']}!"
+                )
             )
         except:
             pass
@@ -785,17 +823,20 @@ async def admin_process_result(update: Update, context):
     # Broadcast result to all users
     await broadcast_result(context, baaji["baaji_number"], patti_value, single_value)
 
-    # Open next baaji automatically
+    # Open next Baaji
     await open_next_baaji(context, baaji["baaji_number"])
 
     context.user_data["awaiting_admin_result"] = False
 
 
 # =====================================================
-# BROADCAST RESULT TO ALL USERS
+# BROADCAST RESULT
 # =====================================================
 
 async def broadcast_result(context, baaji_no, patti, single):
+    """
+    Sends result announcement to all users.
+    """
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT user_id FROM users;")
@@ -812,7 +853,11 @@ async def broadcast_result(context, baaji_no, patti, single):
 
     for row in users:
         try:
-            await context.bot.send_message(chat_id=row[0], text=msg, parse_mode="Markdown")
+            await context.bot.send_message(
+                chat_id=row[0],
+                text=msg,
+                parse_mode="Markdown"
+            )
         except:
             pass
 
@@ -822,21 +867,32 @@ async def broadcast_result(context, baaji_no, patti, single):
 # =====================================================
 
 async def open_next_baaji(context, prev_baaji_no):
-    """Open next baaji immediately after result is declared."""
+    """
+    Opens the next Baaji immediately after result is declared.
+    """
     if prev_baaji_no >= 8:
-        # End of day
-        return
+        return  # Day complete
 
     new_id = create_new_baaji()
-
     if new_id:
         await announce_new_baaji(context, prev_baaji_no + 1)
-        # =====================================================
-# RESULTS DISPLAY (TODAY / YESTERDAY / PREVIOUS)
+
+
+# =====================================================
+# RESULTS MENU
 # =====================================================
 
 async def results_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show results menu."""
+    """
+    Shows results menu (today, yesterday, previous days).
+    """
+    query = update.callback_query
+    if query:
+        await query.answer()
+        message = query.message
+    else:
+        message = update.message
+
     keyboard = [
         [InlineKeyboardButton("📅 Today's Results", callback_data="results_today")],
         [InlineKeyboardButton("📅 Yesterday's Results", callback_data="results_yesterday")],
@@ -844,7 +900,7 @@ async def results_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅ Main Menu", callback_data="main_menu")]
     ]
 
-    await update.message.reply_text(
+    await message.reply_text(
         "📊 *RESULTS MENU*",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -856,7 +912,8 @@ async def results_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 async def results_today(update: Update, context):
-    await update.callback_query.answer()
+    query = update.callback_query
+    await query.answer()
 
     today = date.today()
 
@@ -866,20 +923,23 @@ async def results_today(update: Update, context):
     cur.execute("""
         SELECT baaji_number, patti_result, single_result
         FROM baaji
-        WHERE date=%s
-        ORDER BY baaji_number ASC;
+        WHERE date=%s ORDER BY baaji_number ASC;
     """, (today,))
 
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return await update.callback_query.message.reply_text(
-            "❌ No results for today yet."
-        )
+        return await query.message.edit_text("❌ No results for today yet.")
 
-    patti_row = " | ".join(str(r["patti_result"]).zfill(3) if r["patti_result"] is not None else "---" for r in rows)
-    single_row = " | ".join(str(r["single_result"]) if r["single_result"] is not None else "-" for r in rows)
+    patti_row = " | ".join(
+        str(r["patti_result"]).zfill(3) if r["patti_result"] is not None else "---"
+        for r in rows
+    )
+    single_row = " | ".join(
+        str(r["single_result"]) if r["single_result"] is not None else "-"
+        for r in rows
+    )
 
     msg = (
         f"📅 *Today's Results ({today.strftime('%d/%m/%Y')})*\n\n"
@@ -887,15 +947,14 @@ async def results_today(update: Update, context):
         f"{single_row}"
     )
 
-    await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
-
-
+    await query.message.edit_text(msg, parse_mode="Markdown")
 # =====================================================
 # YESTERDAY'S RESULTS
 # =====================================================
 
 async def results_yesterday(update: Update, context):
-    await update.callback_query.answer()
+    query = update.callback_query
+    await query.answer()
 
     yesterday = date.today() - timedelta(days=1)
 
@@ -905,20 +964,23 @@ async def results_yesterday(update: Update, context):
     cur.execute("""
         SELECT baaji_number, patti_result, single_result
         FROM baaji
-        WHERE date=%s
-        ORDER BY baaji_number ASC;
+        WHERE date=%s ORDER BY baaji_number ASC;
     """, (yesterday,))
 
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return await update.callback_query.message.reply_text(
-            "❌ No results available for yesterday."
-        )
+        return await query.message.edit_text("❌ No results for yesterday.")
 
-    patti_row = " | ".join(str(r["patti_result"]).zfill(3) if r["patti_result"] is not None else "---" for r in rows)
-    single_row = " | ".join(str(r["single_result"]) if r["single_result"] is not None else "-" for r in rows)
+    patti_row = " | ".join(
+        str(r["patti_result"]).zfill(3) if r["patti_result"] is not None else "---"
+        for r in rows
+    )
+    single_row = " | ".join(
+        str(r["single_result"]) if r["single_result"] is not None else "-"
+        for r in rows
+    )
 
     msg = (
         f"📅 *Yesterday's Results ({yesterday.strftime('%d/%m/%Y')})*\n\n"
@@ -926,7 +988,7 @@ async def results_yesterday(update: Update, context):
         f"{single_row}"
     )
 
-    await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+    await query.message.edit_text(msg, parse_mode="Markdown")
 
 
 # =====================================================
@@ -934,13 +996,14 @@ async def results_yesterday(update: Update, context):
 # =====================================================
 
 async def results_previous(update: Update, context):
-    await update.callback_query.answer()
+    query = update.callback_query
+    await query.answer()
 
     conn = get_db()
     cur = conn.cursor()
-
     cur.execute("""
-        SELECT DISTINCT date FROM baaji
+        SELECT DISTINCT date
+        FROM baaji
         WHERE date < %s
         ORDER BY date DESC LIMIT 10;
     """, (date.today(),))
@@ -949,61 +1012,68 @@ async def results_previous(update: Update, context):
     conn.close()
 
     if not dates:
-        return await update.callback_query.message.reply_text("❌ No older results available.")
+        return await query.message.edit_text("❌ No earlier results available.")
 
     keyboard = [
-        [InlineKeyboardButton(d[0].strftime("%d/%m/%Y"), callback_data=f"result_date_{d[0]}")]
+        [InlineKeyboardButton(
+            d[0].strftime("%d/%m/%Y"),
+            callback_data=f"result_date_{d[0].isoformat()}"
+        )]
         for d in dates
     ]
     keyboard.append([InlineKeyboardButton("⬅ Back", callback_data="results_menu")])
 
-    await update.callback_query.message.reply_text(
+    await query.message.edit_text(
         "📅 Select a date:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 # =====================================================
-# SHOW RESULTS FOR A SELECTED DATE
+# SHOW RESULTS FOR SELECTED DATE
 # =====================================================
 
 async def show_results_for_date(update: Update, context):
-    await update.callback_query.answer()
+    query = update.callback_query
+    await query.answer()
 
-    data = update.callback_query.data
-    date_str = data.replace("result_date_", "")
+    cb_data = query.data
+    date_str = cb_data.replace("result_date_", "")
     selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
 
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-
     cur.execute("""
         SELECT baaji_number, patti_result, single_result
         FROM baaji
-        WHERE date=%s
-        ORDER BY baaji_number ASC;
+        WHERE date=%s ORDER BY baaji_number ASC;
     """, (selected_date,))
-
     rows = cur.fetchall()
     conn.close()
 
     if not rows:
-        return await update.callback_query.message.reply_text(
-            "❌ No results for this date."
-        )
+        return await query.message.edit_text("❌ No results for this date.")
 
-    patti_row = " | ".join(str(r["patti_result"]).zfill(3) if r["patti_result"] is not None else "---" for r in rows)
-    single_row = " | ".join(str(r["single_result"]) if r["single_result"] is not None else "-" for r in rows)
+    patti_row = " | ".join(
+        str(r["patti_result"]).zfill(3) if r["patti_result"] else "---"
+        for r in rows
+    )
+    single_row = " | ".join(
+        str(r["single_result"]) if r["single_result"] else "-"
+        for r in rows
+    )
 
     msg = (
-        f"📅 *Results for {selected_date.strftime('%d/%m/%Y')}*\n\n"
+        f"📅 *Results ({selected_date.strftime('%d/%m/%Y')})*\n\n"
         f"{patti_row}\n"
         f"{single_row}"
     )
 
-    await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
-    # =====================================================
-# MAIN MENU & START COMMAND
+    await query.message.edit_text(msg, parse_mode="Markdown")
+
+
+# =====================================================
+# MAIN MENU / START COMMAND
 # =====================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1020,8 +1090,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")])
 
     await update.message.reply_text(
-        "🎉 *Welcome to FF Game Bot!* 🎉\n"
-        "Choose an option below:",
+        "🎉 *Welcome to FF Game Bot!* 🎉\nChoose an option:",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -1032,39 +1101,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =====================================================
 
 async def rules(update: Update, context):
-    await update.callback_query.answer()
+    query = update.callback_query
+    await query.answer()
 
     msg = (
         "📘 *GAME RULES*\n\n"
-        "1️⃣ BAJI OPEN/CLOSE SYSTEM\n"
-        "• Baaji opens 1 hour before closing time.\n"
-        "• Betting closes automatically at fixed time.\n"
+        "1️⃣ **Baaji Rules**\n"
+        "• Baaji opens at scheduled time.\n"
+        "• Betting closes automatically.\n"
         "• Next Baaji opens ONLY after admin declares result.\n\n"
-        "2️⃣ BETTING RULES\n"
-        "• Bet limit per Baaji: 10 bets\n"
-        "• Minimum bet: 5\n"
-        "• Maximum bet: 5000\n\n"
-        "3️⃣ WALLET RULES\n"
-        "• Minimum Add Points: 50\n"
-        "• Redeem allowed once per day\n"
-        "• Winnings credited automatically\n\n"
-        "4️⃣ RESULT RULES\n"
-        "• Admin enters 3-digit Patti\n"
-        "• Bot auto-calculates single digit\n"
-        "• Results broadcast to all users\n\n"
+        "2️⃣ **Betting Rules**\n"
+        "• Max 10 bets per Baaji.\n"
+        "• Bet range: 5 to 5000.\n\n"
+        "3️⃣ **Wallet Rules**\n"
+        "• Minimum add: 50\n"
+        "• Redeem once per day\n"
+        "• Winnings auto-credited\n\n"
+        "4️⃣ **Result Rules**\n"
+        "• Admin enters 3-digit Patti.\n"
+        "• Bot calculates Single.\n"
+        "• Results broadcast to all.\n"
     )
 
-    await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+    await query.message.edit_text(msg, parse_mode="Markdown")
 
 
 # =====================================================
-# CALLBACK QUERY ROUTER
+# CALLBACK ROUTER (CLEAN & FINAL)
 # =====================================================
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = update.callback_query.data
 
-    # MAIN MENU ROUTING
+    # MAIN MENU
     if data == "main_menu":
         return await start(update, context)
 
@@ -1080,7 +1149,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "rules":
         return await rules(update, context)
 
-    # PLAY ROUTING
+    # PLAY
     if data == "play_single":
         return await handle_single(update, context)
 
@@ -1096,7 +1165,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "cancel_bet":
         return await cancel_bet(update, context)
 
-    # WALLET ROUTING
+    # WALLET
     if data == "add_points":
         return await handle_add_points(update, context)
 
@@ -1106,7 +1175,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "bet_history":
         return await show_bet_history(update, context)
 
-    # RESULTS ROUTING
+    # RESULTS
     if data == "results_today":
         return await results_today(update, context)
 
@@ -1119,7 +1188,7 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("result_date_"):
         return await show_results_for_date(update, context)
 
-    # ADMIN ROUTING
+    # ADMIN PANEL
     if data == "admin_panel":
         return await admin_panel(update, context)
 
@@ -1140,28 +1209,28 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_stats":
         return await admin_stats(update, context)
-
-
 # =====================================================
-# ADMIN ADD/DEDUCT POINTS (TEXT INPUT)
+# ADMIN ADD/DEDUCT POINTS COMMANDS
 # =====================================================
 
 async def admin_add_points_menu(update: Update, context):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        "Enter: /addpoints user_id amount"
-    )
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text("Use:\n/addpoints user_id amount")
+
 
 async def admin_deduct_points_menu(update: Update, context):
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(
-        "Enter: /deductpoints user_id amount"
-    )
+    query = update.callback_query
+    await query.answer()
+    await query.message.edit_text("Use:\n/deductpoints user_id amount")
 
 
 async def addpoints_cmd(update: Update, context):
+    """
+    Admin command: /addpoints user amount
+    """
     if update.effective_user.id != ADMIN_ID:
-        return
+        return await update.message.reply_text("❌ Unauthorized.")
 
     if len(context.args) != 2:
         return await update.message.reply_text("Use: /addpoints user amount")
@@ -1171,16 +1240,20 @@ async def addpoints_cmd(update: Update, context):
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id=%s;", (amount, user_id))
+    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id=%s;",
+                (amount, user_id))
     conn.commit()
     conn.close()
 
-    await update.message.reply_text(f"Added {amount} points to {user_id}")
+    await update.message.reply_text(f"✅ Added {amount} points to {user_id}")
 
 
 async def deductpoints_cmd(update: Update, context):
+    """
+    Admin command: /deductpoints user amount
+    """
     if update.effective_user.id != ADMIN_ID:
-        return
+        return await update.message.reply_text("❌ Unauthorized.")
 
     if len(context.args) != 2:
         return await update.message.reply_text("Use: /deductpoints user amount")
@@ -1190,29 +1263,70 @@ async def deductpoints_cmd(update: Update, context):
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET wallet = wallet - %s, last_redeem=%s WHERE user_id=%s;",
-                (amount, date.today(), user_id))
+    cur.execute("""
+        UPDATE users
+        SET wallet = wallet - %s, last_redeem=%s
+        WHERE user_id=%s;
+    """, (amount, date.today(), user_id))
+
     conn.commit()
     conn.close()
 
-    await update.message.reply_text(f"Deducted {amount} points from {user_id}")
+    await update.message.reply_text(f"✅ Deducted {amount} points from {user_id}")
 
 
 # =====================================================
-# SHOW BET HISTORY
+# ADMIN STATS
+# =====================================================
+
+async def admin_stats(update: Update, context):
+    """
+    Show total users, total bets, today stats.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM users;")
+    total_users = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM bets;")
+    total_bets = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM baaji WHERE date=%s;", (date.today(),))
+    todays_baajis = cur.fetchone()[0]
+
+    conn.close()
+
+    msg = (
+        "📊 *ADMIN STATS*\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"🎲 Total Bets: {total_bets}\n"
+        f"📅 Today's Baajis Created: {todays_baajis}\n"
+    )
+
+    await query.message.edit_text(msg, parse_mode="Markdown")
+
+
+# =====================================================
+# BET HISTORY
 # =====================================================
 
 async def show_bet_history(update: Update, context):
-    await update.callback_query.answer()
-    user_id = update.callback_query.from_user.id
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
 
     conn = get_db()
     cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
 
     cur.execute("""
-        SELECT b.baaji_id, b.type, b.digit, b.amount
-        FROM bets b
-        WHERE b.user_id=%s
+        SELECT baaji_id, type, digit, amount
+        FROM bets
+        WHERE user_id=%s
         ORDER BY id DESC LIMIT 20;
     """, (user_id,))
 
@@ -1220,47 +1334,44 @@ async def show_bet_history(update: Update, context):
     conn.close()
 
     if not rows:
-        return await update.callback_query.message.reply_text(
-            "📜 No bet history found."
-        )
+        return await query.message.edit_text("📜 No bet history found.")
 
     msg = "📜 *Your Last 20 Bets:*\n\n"
     for r in rows:
-        msg += f"Baaji {r['baaji_id']} → {r['type']} {r['digit']} | {r['amount']}\n"
+        msg += f"Baaji {r['baaji_id']} — {r['type']} {r['digit']} | {r['amount']}\n"
 
-    await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+    await query.message.edit_text(msg, parse_mode="Markdown")
 
 
 # =====================================================
-# REGISTER HANDLERS & START BOT
+# MAIN() — REGISTER HANDLERS & START BOT
 # =====================================================
 
 def main():
-    init_db()
+    init_db()  # Ensure tables exist
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Commands
+    # COMMAND HANDLERS
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addpoints", addpoints_cmd))
     app.add_handler(CommandHandler("deductpoints", deductpoints_cmd))
 
-    # Callback handler
+    # CALLBACK HANDLER
     app.add_handler(CallbackQueryHandler(callback_router))
 
-    # Text handlers for add/redeem/bet inputs
+    # TEXT INPUT HANDLER
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_amount))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_redeem_amount))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_patti_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_bet_amount))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_result))
 
-    # Scheduled Jobs
+    # SCHEDULED JOBS
     app.job_queue.run_repeating(auto_close_baaji, interval=30, first=10)
     app.job_queue.run_repeating(midnight_reset, interval=60, first=20)
 
-    # Run
-    print("BOT IS RUNNING...")
+    print("🚀 BOT IS RUNNING...")
     app.run_polling()
 
 
@@ -1270,5 +1381,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
-    
