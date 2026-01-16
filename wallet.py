@@ -246,16 +246,15 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("""
-        SELECT user_id, amount
-        FROM add_requests
-        WHERE id=%s AND status='pending'
-    """, (req_id,))
+    cur.execute(
+        "SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'",
+        (req_id,)
+    )
     row = cur.fetchone()
 
     if not row:
         conn.close()
-        return await query.message.edit_text("❌ Already processed")
+        return await query.message.edit_caption("❌ Already processed")
 
     user_id, amount = row
 
@@ -268,24 +267,35 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "UPDATE add_requests SET status='approved' WHERE id=%s",
             (req_id,)
         )
+        conn.commit()
+
         await context.bot.send_message(
             user_id,
             f"✅ {amount} points approved"
         )
-        await query.message.edit_text("✅ Approved")
+
+        # ✅ THIS IS THE IMPORTANT FIX
+        await query.message.edit_caption(
+            "✅ Approved\n\nWallet updated."
+        )
 
     else:
         cur.execute(
             "UPDATE add_requests SET status='rejected' WHERE id=%s",
             (req_id,)
         )
+        conn.commit()
+
         await context.bot.send_message(
             user_id,
             "❌ Add request rejected"
         )
-        await query.message.edit_text("❌ Rejected")
 
-    conn.commit()
+        # ✅ FIX HERE TOO
+        await query.message.edit_caption(
+            "❌ Rejected"
+        )
+
     conn.close()
 
 # ================= ADMIN STATS =================
