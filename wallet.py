@@ -339,19 +339,45 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================= MAIN =================
 
+async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Routes text messages between:
+    - admin manual add
+    - user add amount
+    """
+    if context.user_data.get("admin_manual_add"):
+        return await process_admin_manual_add(update, context)
+    else:
+        return await process_add_amount(update, context)
+
+
 def main():
     init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # COMMANDS
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(callback_router))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_manual_add))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_amount))
-    app.add_handler(MessageHandler(filters.PHOTO, process_screenshot))
 
-    print("BOT RUNNING")
+    # CALLBACK BUTTONS
+    app.add_handler(CallbackQueryHandler(callback_router))
+
+    # TEXT INPUT (NO LAMBDA, NO BUGS)
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_router
+        )
+    )
+
+    # SCREENSHOT UPLOAD
+    app.add_handler(
+        MessageHandler(filters.PHOTO, process_screenshot)
+    )
+
+    print("🚀 BOT RUNNING")
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
