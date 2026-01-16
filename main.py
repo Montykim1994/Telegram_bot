@@ -1172,6 +1172,35 @@ async def rules(update: Update, context):
     await query.message.edit_text(msg, parse_mode="Markdown")
 
 
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_ID:
+        return await query.message.edit_text("❌ Unauthorized.")
+
+    keyboard = [
+        [
+            InlineKeyboardButton("➕ Add Points", callback_data="admin_add_points"),
+            InlineKeyboardButton("➖ Deduct Points", callback_data="admin_deduct_points")
+        ],
+        [
+            InlineKeyboardButton("📊 Stats", callback_data="admin_stats")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Back", callback_data="main_menu")
+        ]
+    ]
+
+    await query.message.edit_text(
+        "🛠 *Admin Panel*\nChoose an option:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    
+
+
 # =====================================================
 # CALLBACK ROUTER (CLEAN & FINAL)
 # =====================================================
