@@ -300,13 +300,9 @@ async def handle_add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Set state flag
     context.user_data["awaiting_add_amount"] = True
 
-
 async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Processes user's typed add amount.
-    """
     if not context.user_data.get("awaiting_add_amount"):
-        return  # Ignore unrelated messages
+        return
 
     user_id = update.effective_user.id
     amount_text = update.message.text.strip()
@@ -321,26 +317,67 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"❌ Minimum add amount is {MIN_ADD_POINTS}."
         )
 
+    # Save amount temporarily
+    context.user_data["temp_amount"] = amount
+    context.user_data["awaiting_screenshot"] = True
+    context.user_data["awaiting_add_amount"] = False
+
     await update.message.reply_text(
-        "📨 Your add request has been sent to admin.\nPlease wait for approval."
+        "📸 Please upload the payment screenshot to verify your payment."
     )
 
-    # Notify Admin
-    await context.bot.send_message(
+
+    async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("awaiting_screenshot"):
+        return
+
+    user_id = update.effective_user.id
+    amount = context.user_data.get("temp_amount")
+
+    if not update.message.photo:
+        return await update.message.reply_text("❌ Please send a valid screenshot (photo).")
+
+    screenshot_id = update.message.photo[-1].file_id
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO add_requests (user_id, amount, screenshot_id, status)
+        VALUES (%s, %s, %s, 'pending')
+        RETURNING id
+    """, (user_id, amount, screenshot_id))
+
+    request_id = cur.fetchone()[0]
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text("📨 Your request has been submitted! Admin will review it.")
+
+    # Notify admin
+    buttons = [
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"approve_{request_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject_{request_id}")
+        ]
+    ]
+
+    await context.bot.send_photo(
         chat_id=ADMIN_ID,
-        text=(
-            f"📥 *Add Request*\n"
-            f"User ID: `{user_id}`\n"
-            f"Amount: `{amount}`\n\n"
-            f"Use command:\n"
-            f"/addpoints {user_id} {amount}"
+        photo=screenshot_id,
+        caption=(
+            f"📥 *Add Request Received*\n"
+            f"ID: {request_id}\n"
+            f"User: {user_id}\n"
+            f"Amount: {amount}"
         ),
+        reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown"
     )
 
-    # Clear state
-    context.user_data["awaiting_add_amount"] = False
-
+    # Clear flags
+    context.user_data["awaiting_screenshot"] = False
+    context.user_data["temp_amount"] = None
 
 # =====================================================
 # REDEEM POINTS (USER REQUEST)
@@ -1237,16 +1274,90 @@ async def addpoints_cmd(update: Update, context):
 
     user_id = int(context.args[0])
     amount = int(context.args[1])
+# =============================
+# APPROVE ADD REQUEST
+# =============================
+async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("❌ You are not authorized.")
+
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        return await update.message.reply_text("Usage: /approve request_id")
+
+    request_id = int(context.args[0])
 
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id=%s;",
-                (amount, user_id))
+
+    cur.execute("SELECT user_id, amount, status FROM add_requests WHERE id = %s", (request_id,))
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        return await update.message.reply_text("❌ Invalid request ID.")
+
+    user_id, amount, status = row
+
+    if status != "pending":
+        conn.close()
+        return await update.message.reply_text("⚠ Request already processed.")
+
+    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id = %s", (amount, user_id))
+    cur.execute("UPDATE add_requests SET status = 'approved' WHERE id = %s", (request_id,))
+
     conn.commit()
     conn.close()
 
-    await update.message.reply_text(f"✅ Added {amount} points to {user_id}")
+    await update.message.reply_text(f"✅ Request {request_id} approved.\nWallet updated.")
 
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"🎉 Your add request (ID: {request_id}) for {amount} points has been approved!",
+        parse_mode="Markdown"
+    )
+
+
+# =============================
+# REJECT ADD REQUEST
+# =============================
+async def reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return await update.message.reply_text("❌ You are not authorized.")
+
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        return await update.message.reply_text("Usage: /reject request_id")
+
+    request_id = int(context.args[0])
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT user_id, amount, status FROM add_requests WHERE id = %s", (request_id,))
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        return await update.message.reply_text("❌ Invalid request ID.")
+
+    user_id, amount, status = row
+
+    if status != "pending":
+        conn.close()
+        return await update.message.reply_text("⚠ Request already processed.")
+
+    cur.execute("UPDATE add_requests SET status = 'rejected' WHERE id = %s", (request_id,))
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(f"❌ Request {request_id} rejected.")
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"⚠ Your add request (ID: {request_id}) has been rejected.",
+        parse_mode="Markdown"
+        )
+    
 
 async def deductpoints_cmd(update: Update, context):
     """
@@ -1366,6 +1477,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_patti_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_bet_amount))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_result))
+    application.add_handler(MessageHandler(filters.PHOTO, process_screenshot))
+    
 
     # SCHEDULED JOBS
     app.job_queue.run_repeating(auto_close_baaji, interval=30, first=10)
