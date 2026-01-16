@@ -327,7 +327,8 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= CALLBACK ROUTER =================
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = update.callback_query.data
+    query = update.callback_query
+    data = query.data
 
     if data == "add_points":
         return await handle_add_points(update, context)
@@ -341,12 +342,13 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats":
         return await admin_stats(update, context)
 
+    # ✅ ONLY route approval here — DO NOT edit message here
     if data.startswith("approve_") or data.startswith("reject_"):
         return await handle_approval(update, context)
 
     if data == "back":
         return await start(update.callback_query, context)
-
+        
 # ================= MAIN =================
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
