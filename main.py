@@ -300,6 +300,8 @@ async def handle_add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Set state flag
     context.user_data["awaiting_add_amount"] = True
 
+
+
 async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_add_amount"):
         return
@@ -325,6 +327,7 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         "📸 Please upload the payment screenshot to verify your payment."
     )
+
 
 
   async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
