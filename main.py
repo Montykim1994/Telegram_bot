@@ -300,11 +300,12 @@ async def handle_add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Set state flag
     context.user_data["awaiting_add_amount"] = True
 
-
-
+# ============================
+# PROCESS ADD AMOUNT
+# ============================
 async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_add_amount"):
-        return
+        return  # Ignore unrelated messages
 
     user_id = update.effective_user.id
     amount_text = update.message.text.strip()
@@ -329,10 +330,12 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-
-  async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ============================
+# PROCESS SCREENSHOT
+# ============================
+async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_screenshot"):
-        return
+        return  # Ignore if not expecting screenshot
 
     user_id = update.effective_user.id
     amount = context.user_data.get("temp_amount")
@@ -357,6 +360,7 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text("📤 Your request has been submitted! Admin will review it.")
 
+    # Send to admin with Approve / Reject buttons
     buttons = [
         [
             InlineKeyboardButton("✅ Approve", callback_data=f"approve_{request_id}"),
@@ -377,8 +381,13 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
         parse_mode="Markdown"
     )
 
+    # Clear temporary flags
     context.user_data["awaiting_screenshot"] = False
-    context.user_data["temp_amount"] = None  
+    context.user_data["temp_amount"] = None
+
+
+    
+
 # =====================================================
 # REDEEM POINTS (USER REQUEST)
 # =====================================================
