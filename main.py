@@ -327,7 +327,7 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-    async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_screenshot"):
         return
 
@@ -345,16 +345,15 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     cur.execute("""
         INSERT INTO add_requests (user_id, amount, screenshot_id, status)
         VALUES (%s, %s, %s, 'pending')
-        RETURNING id
+        RETURNING id;
     """, (user_id, amount, screenshot_id))
 
     request_id = cur.fetchone()[0]
     conn.commit()
     conn.close()
 
-    await update.message.reply_text("📨 Your request has been submitted! Admin will review it.")
+    await update.message.reply_text("📤 Your request has been submitted! Admin will review it.")
 
-    # Notify admin
     buttons = [
         [
             InlineKeyboardButton("✅ Approve", callback_data=f"approve_{request_id}"),
@@ -367,18 +366,16 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
         photo=screenshot_id,
         caption=(
             f"📥 *Add Request Received*\n"
-            f"ID: {request_id}\n"
-            f"User: {user_id}\n"
-            f"Amount: {amount}"
+            f"ID: `{request_id}`\n"
+            f"User: `{user_id}`\n"
+            f"Amount: `{amount}`"
         ),
         reply_markup=InlineKeyboardMarkup(buttons),
         parse_mode="Markdown"
     )
 
-    # Clear flags
     context.user_data["awaiting_screenshot"] = False
-    context.user_data["temp_amount"] = None
-
+    context.user_data["temp_amount"] = None  
 # =====================================================
 # REDEEM POINTS (USER REQUEST)
 # =====================================================
