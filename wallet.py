@@ -19,7 +19,7 @@ from telegram.ext import (
 # ================= CONFIG =================
 
 BOT_TOKEN = "YOUR_BOT_TOKEN"
-ADMIN_ID = 123456789
+ADMIN_ID = 123456789        # <-- YOUR Telegram ID
 MIN_ADD_POINTS = 50
 
 logging.basicConfig(level=logging.INFO)
@@ -82,10 +82,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🛠 Admin Panel", callback_data="admin_panel")]
         )
 
-    await update.message.reply_text(
-        "Welcome to Wallet System",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    if update.message:
+        await update.message.reply_text(
+            "Welcome!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.callback_query.message.edit_text(
+            "Welcome!",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
 # ================= USER ADD (SCREENSHOT FLOW) =================
 
@@ -105,20 +111,22 @@ async def process_add_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     text = update.message.text.strip()
+
     if not text.isdigit():
-        return await update.message.reply_text("❌ Enter valid number")
+        return await update.message.reply_text("❌ Enter a valid number")
 
     amount = int(text)
+
     if amount < MIN_ADD_POINTS:
         return await update.message.reply_text(
-            f"❌ Minimum is {MIN_ADD_POINTS}"
+            f"❌ Minimum add is {MIN_ADD_POINTS}"
         )
 
     context.user_data.clear()
     context.user_data["awaiting_screenshot"] = True
     context.user_data["temp_amount"] = amount
 
-    await update.message.reply_text("📸 Upload payment screenshot")
+    await update.message.reply_text("📸 Send payment screenshot")
 
 async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get("awaiting_screenshot"):
@@ -129,7 +137,7 @@ async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user_id = update.effective_user.id
     amount = context.user_data["temp_amount"]
-    screenshot_id = update.message.photo[-1].file_id
+    photo_id = update.message.photo[-1].file_id
 
     conn = get_db()
     cur = conn.cursor()
@@ -137,14 +145,14 @@ async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
         INSERT INTO add_requests (user_id, amount, screenshot_id)
         VALUES (%s, %s, %s)
         RETURNING id
-    """, (user_id, amount, screenshot_id))
+    """, (user_id, amount, photo_id))
     req_id = cur.fetchone()[0]
     conn.commit()
     conn.close()
 
     context.user_data.clear()
 
-    await update.message.reply_text("📤 Request submitted")
+    await update.message.reply_text("📤 Request sent to admin")
 
     buttons = [[
         InlineKeyboardButton("✅ Approve", callback_data=f"approve_{req_id}"),
@@ -153,13 +161,8 @@ async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await context.bot.send_photo(
         chat_id=ADMIN_ID,
-        photo=screenshot_id,
-        caption=(
-            f"Add Request\n"
-            f"ID: {req_id}\n"
-            f"User: {user_id}\n"
-            f"Amount: {amount}"
-        ),
+        photo=photo_id,
+        caption=f"Add Request\nID: {req_id}\nUser: {user_id}\nAmount: {amount}",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
@@ -192,19 +195,21 @@ async def admin_manual_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     context.user_data.clear()
-    context.user_data["admin_manual"] = True
+    context.user_data["admin_manual_add"] = True
 
     await query.message.edit_text(
         "Send:\nUSER_ID AMOUNT\n\nExample:\n123456789 500"
     )
 
 async def process_admin_manual_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("admin_manual"):
+    if not context.user_data.get("admin_manual_add"):
         return
+
     if update.effective_user.id != ADMIN_ID:
         return
 
     parts = update.message.text.split()
+
     if len(parts) != 2 or not all(p.isdigit() for p in parts):
         return await update.message.reply_text("❌ Invalid format")
 
@@ -227,7 +232,7 @@ async def process_admin_manual_add(update: Update, context: ContextTypes.DEFAULT
         f"💰 {amount} points added by admin"
     )
 
-# ================= APPROVE / REJECT =================
+# ================= ADMIN APPROVE / REJECT =================
 
 async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -295,11 +300,10 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cur.execute("SELECT COUNT(*), COALESCE(SUM(amount),0) FROM add_requests")
     total_count, total_amt = cur.fetchone()
 
-    cur.execute("""
-        SELECT COUNT(*), COALESCE(SUM(amount),0)
-        FROM add_requests
-        WHERE created=%s
-    """, (date.today(),))
+    cur.execute(
+        "SELECT COUNT(*), COALESCE(SUM(amount),0) FROM add_requests WHERE created=%s",
+        (date.today(),)
+    )
     today_count, today_amt = cur.fetchone()
 
     conn.close()
@@ -317,14 +321,19 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "add_points":
         return await handle_add_points(update, context)
+
     if data == "admin_panel":
         return await admin_panel(update, context)
+
     if data == "admin_manual_add":
         return await admin_manual_add(update, context)
+
     if data == "admin_stats":
         return await admin_stats(update, context)
+
     if data.startswith("approve_") or data.startswith("reject_"):
         return await handle_approval(update, context)
+
     if data == "back":
         return await start(update.callback_query, context)
 
@@ -337,16 +346,9 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_router))
-
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_manual_add)
-    )
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_amount)
-    )
-    app.add_handler(
-        MessageHandler(filters.PHOTO, process_screenshot)
-    )
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_manual_add))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_amount))
+    app.add_handler(MessageHandler(filters.PHOTO, process_screenshot))
 
     print("BOT RUNNING")
     app.run_polling()
