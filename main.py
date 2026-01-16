@@ -1255,203 +1255,64 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_stats":
         return await admin_stats(update, context)
+        
+    # APPROVE ADD REQUEST
+    if data.startswith("approve_"):
+        request_id = int(data.split("_")[1])
 
+        conn = get_db()
+        cur = conn.cursor()
 
-# APPROVE ADD REQUEST
-if data.startswith("approve_"):
-    request_id = int(data.split("_")[1])
+        cur.execute("SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'", (request_id,))
+        row = cur.fetchone()
 
-    conn = get_db()
-    cur = conn.cursor()
+        if not row:
+            return await update.callback_query.message.edit_text("❌ Request not found or already processed.")
 
-    cur.execute("SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'", (request_id,))
-    row = cur.fetchone()
+        user_id, amount = row
 
-    if not row:
-        return await update.callback_query.message.edit_text("❌ Request not found or already processed.")
-
-    user_id, amount = row
-
-    # Update wallet
-    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id=%s", (amount, user_id))
-    cur.execute("UPDATE add_requests SET status='approved' WHERE id=%s", (request_id,))
-    conn.commit()
-    conn.close()
-
-    await update.callback_query.message.edit_text(f"✅ Approved request {request_id}.\nWallet updated!")
-
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=f"✅ Your add request (ID: {request_id}) has been approved.\nAmount added: {amount}",
-    )
-    return
-
-
-# REJECT ADD REQUEST
-if data.startswith("reject_"):
-    request_id = int(data.split("_")[1])
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'", (request_id,))
-    row = cur.fetchone()
-
-    if not row:
-        return await update.callback_query.message.edit_text("❌ Request not found or already processed.")
-
-    user_id, amount = row
-
-    cur.execute("UPDATE add_requests SET status='rejected' WHERE id=%s", (request_id,))
-    conn.commit()
-    conn.close()
-
-    await update.callback_query.message.edit_text(f"❌ Rejected request {request_id}.")
-
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=f"❌ Your add request (ID: {request_id}) has been rejected.",
-    )
-    return
-
-# =====================================================
-# ADMIN ADD/DEDUCT POINTS COMMANDS
-# =====================================================
-
-async def admin_add_points_menu(update: Update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.message.edit_text("Use:\n/addpoints user_id amount")
-
-
-async def admin_deduct_points_menu(update: Update, context):
-    query = update.callback_query
-    await query.answer()
-    await query.message.edit_text("Use:\n/deductpoints user_id amount")
-
-
-async def addpoints_cmd(update: Update, context):
-    """
-    Admin command: /addpoints user amount
-    """
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ Unauthorized.")
-
-    if len(context.args) != 2:
-        return await update.message.reply_text("Use: /addpoints user amount")
-
-    user_id = int(context.args[0])
-    amount = int(context.args[1])
-# =============================
-# APPROVE ADD REQUEST
-# =============================
-async def approve_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ You are not authorized.")
-
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        return await update.message.reply_text("Usage: /approve request_id")
-
-    request_id = int(context.args[0])
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("SELECT user_id, amount, status FROM add_requests WHERE id = %s", (request_id,))
-    row = cur.fetchone()
-
-    if not row:
+        cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id=%s", (amount, user_id))
+        cur.execute("UPDATE add_requests SET status='approved' WHERE id=%s", (request_id,))
+        conn.commit()
         conn.close()
-        return await update.message.reply_text("❌ Invalid request ID.")
 
-    user_id, amount, status = row
+        await update.callback_query.message.edit_text(f"✅ Approved request {request_id}.\nWallet updated!")
 
-    if status != "pending":
-        conn.close()
-        return await update.message.reply_text("⚠ Request already processed.")
-
-    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id = %s", (amount, user_id))
-    cur.execute("UPDATE add_requests SET status = 'approved' WHERE id = %s", (request_id,))
-
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text(f"✅ Request {request_id} approved.\nWallet updated.")
-
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=f"🎉 Your add request (ID: {request_id}) for {amount} points has been approved!",
-        parse_mode="Markdown"
-    )
-
-
-# =============================
-# REJECT ADD REQUEST
-# =============================
-async def reject_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ You are not authorized.")
-
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        return await update.message.reply_text("Usage: /reject request_id")
-
-    request_id = int(context.args[0])
-
-    conn = get_db()
-    cur = conn.cursor()
-
-    cur.execute("SELECT user_id, amount, status FROM add_requests WHERE id = %s", (request_id,))
-    row = cur.fetchone()
-
-    if not row:
-        conn.close()
-        return await update.message.reply_text("❌ Invalid request ID.")
-
-    user_id, amount, status = row
-
-    if status != "pending":
-        conn.close()
-        return await update.message.reply_text("⚠ Request already processed.")
-
-    cur.execute("UPDATE add_requests SET status = 'rejected' WHERE id = %s", (request_id,))
-
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text(f"❌ Request {request_id} rejected.")
-
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=f"⚠ Your add request (ID: {request_id}) has been rejected.",
-        parse_mode="Markdown"
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"✅ Your add request (ID: {request_id}) has been approved.\nAmount added: {amount}",
         )
-    
+        return
 
-async def deductpoints_cmd(update: Update, context):
-    """
-    Admin command: /deductpoints user amount
-    """
-    if update.effective_user.id != ADMIN_ID:
-        return await update.message.reply_text("❌ Unauthorized.")
+    # REJECT ADD REQUEST
+    if data.startswith("reject_"):
+        request_id = int(data.split("_")[1])
 
-    if len(context.args) != 2:
-        return await update.message.reply_text("Use: /deductpoints user amount")
+        conn = get_db()
+        cur = conn.cursor()
 
-    user_id = int(context.args[0])
-    amount = int(context.args[1])
+        cur.execute("SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'", (request_id,))
+        row = cur.fetchone()
 
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        UPDATE users
-        SET wallet = wallet - %s, last_redeem=%s
-        WHERE user_id=%s;
-    """, (amount, date.today(), user_id))
+        if not row:
+            return await update.callback_query.message.edit_text("❌ Request not found or already processed.")
 
-    conn.commit()
-    conn.close()
+        user_id, amount = row
 
-    await update.message.reply_text(f"✅ Deducted {amount} points from {user_id}")
+        cur.execute("UPDATE add_requests SET status='rejected' WHERE id=%s", (request_id,))
+        conn.commit()
+        conn.close()
+
+        await update.callback_query.message.edit_text(f"❌ Rejected request {request_id}.")
+
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"❌ Your add request (ID: {request_id}) has been rejected.",
+        )
+        return
+
+
+
 
 
 # =====================================================
@@ -1533,8 +1394,7 @@ def main():
 
     # COMMAND HANDLERS
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addpoints", addpoints_cmd))
-    app.add_handler(CommandHandler("deductpoints", deductpoints_cmd))
+    
 
     # CALLBACK HANDLER
     app.add_handler(CallbackQueryHandler(callback_router))
