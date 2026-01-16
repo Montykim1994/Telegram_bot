@@ -1255,6 +1255,65 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "admin_stats":
         return await admin_stats(update, context)
+
+
+# APPROVE ADD REQUEST
+if data.startswith("approve_"):
+    request_id = int(data.split("_")[1])
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'", (request_id,))
+    row = cur.fetchone()
+
+    if not row:
+        return await update.callback_query.message.edit_text("❌ Request not found or already processed.")
+
+    user_id, amount = row
+
+    # Update wallet
+    cur.execute("UPDATE users SET wallet = wallet + %s WHERE user_id=%s", (amount, user_id))
+    cur.execute("UPDATE add_requests SET status='approved' WHERE id=%s", (request_id,))
+    conn.commit()
+    conn.close()
+
+    await update.callback_query.message.edit_text(f"✅ Approved request {request_id}.\nWallet updated!")
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"✅ Your add request (ID: {request_id}) has been approved.\nAmount added: {amount}",
+    )
+    return
+
+
+# REJECT ADD REQUEST
+if data.startswith("reject_"):
+    request_id = int(data.split("_")[1])
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'", (request_id,))
+    row = cur.fetchone()
+
+    if not row:
+        return await update.callback_query.message.edit_text("❌ Request not found or already processed.")
+
+    user_id, amount = row
+
+    cur.execute("UPDATE add_requests SET status='rejected' WHERE id=%s", (request_id,))
+    conn.commit()
+    conn.close()
+
+    await update.callback_query.message.edit_text(f"❌ Rejected request {request_id}.")
+
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"❌ Your add request (ID: {request_id}) has been rejected.",
+    )
+    return
+
 # =====================================================
 # ADMIN ADD/DEDUCT POINTS COMMANDS
 # =====================================================
