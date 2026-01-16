@@ -1486,7 +1486,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_patti_input))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, process_bet_amount))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_result))
-    application.add_handler(MessageHandler(filters.PHOTO, process_screenshot))
+    app.add_handler(MessageHandler(filters.PHOTO, process_screenshot))
     
 
     # SCHEDULED JOBS
