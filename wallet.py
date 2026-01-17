@@ -254,7 +254,10 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not row:
         conn.close()
-        return await query.message.edit_text("❌ Already processed")
+        # Use edit_caption since this is a photo message
+        return await query.message.edit_caption(
+            caption="❌ Already processed"
+        )
 
     user_id, amount = row
 
@@ -274,9 +277,9 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ {amount} points approved"
         )
 
-        # ✅ FIXED: Changed from edit_caption to edit_text
-        await query.message.edit_text(
-            "✅ Approved\n\nWallet updated."
+        # ✅ CORRECT: Use edit_caption for photo messages
+        await query.message.edit_caption(
+            caption="✅ Approved\n\nWallet updated."
         )
 
     else:
@@ -291,9 +294,9 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Add request rejected"
         )
 
-        # ✅ FIXED: Changed from edit_caption to edit_text
-        await query.message.edit_text(
-            "❌ Rejected"
+        # ✅ CORRECT: Use edit_caption for photo messages
+        await query.message.edit_caption(
+            caption="❌ Rejected"
         )
 
     conn.close()
