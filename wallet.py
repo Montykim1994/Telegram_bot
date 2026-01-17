@@ -51,7 +51,6 @@ def init_db():
         user_id BIGINT,
         amount INT,
         screenshot_id TEXT,
-        status TEXT DEFAULT 'pending',
         created DATE DEFAULT CURRENT_DATE
     )
     """)
@@ -93,7 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-# ================= USER ADD (SCREENSHOT FLOW) =================
+# ================= USER ADD FLOW =================
 
 async def handle_add_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -154,16 +153,16 @@ async def process_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await update.message.reply_text("📤 Request sent to admin")
 
-    buttons = [[
-        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{req_id}"),
-        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{req_id}")
-    ]]
-
     await context.bot.send_photo(
         chat_id=ADMIN_ID,
         photo=photo_id,
-        caption=f"Add Request\nID: {req_id}\nUser: {user_id}\nAmount: {amount}",
-        reply_markup=InlineKeyboardMarkup(buttons)
+        caption=(
+            "📩 Add Request Received\n\n"
+            f"ID: {req_id}\n"
+            f"User: {user_id}\n"
+            f"Amount: {amount}\n\n"
+            "➡️ Use Admin → Manual Add"
+        )
     )
 
 # ================= ADMIN PANEL =================
@@ -232,75 +231,6 @@ async def process_admin_manual_add(update: Update, context: ContextTypes.DEFAULT
         f"💰 {amount} points added by admin"
     )
 
-# ================= ADMIN APPROVE / REJECT =================
-
-async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    action, req_id = query.data.split("_")
-    req_id = int(req_id)
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT user_id, amount FROM add_requests WHERE id=%s AND status='pending'",
-        (req_id,)
-    )
-    row = cur.fetchone()
-
-    if not row:
-        conn.close()
-        # Use edit_caption since this is a photo message
-        return await query.message.edit_caption(
-            caption="❌ Already processed"
-        )
-
-    user_id, amount = row
-
-    if action == "approve":
-        cur.execute(
-            "UPDATE users SET wallet = wallet + %s WHERE user_id=%s",
-            (amount, user_id)
-        )
-        cur.execute(
-            "UPDATE add_requests SET status='approved' WHERE id=%s",
-            (req_id,)
-        )
-        conn.commit()
-
-        await context.bot.send_message(
-            user_id,
-            f"✅ {amount} points approved"
-        )
-
-        # ✅ CORRECT: Use edit_caption for photo messages
-        await query.message.edit_caption(
-            caption="✅ Approved\n\nWallet updated."
-        )
-
-    else:
-        cur.execute(
-            "UPDATE add_requests SET status='rejected' WHERE id=%s",
-            (req_id,)
-        )
-        conn.commit()
-
-        await context.bot.send_message(
-            user_id,
-            "❌ Add request rejected"
-        )
-
-        # ✅ CORRECT: Use edit_caption for photo messages
-        await query.message.edit_caption(
-            caption="❌ Rejected"
-        )
-
-    conn.close()
-
 # ================= ADMIN STATS =================
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -330,8 +260,7 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= CALLBACK ROUTER =================
 
 async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
+    data = update.callback_query.data
 
     if data == "add_points":
         return await handle_add_points(update, context)
@@ -345,38 +274,27 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats":
         return await admin_stats(update, context)
 
-    if data.startswith("approve_") or data.startswith("reject_"):
-        return await handle_approval(update, context)
-
     if data == "back":
         return await start(update.callback_query, context)
-        
-# ================= MAIN =================
+
+# ================= TEXT ROUTER =================
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Routes text messages between:
-    - admin manual add
-    - user add amount
-    """
     if context.user_data.get("admin_manual_add"):
         return await process_admin_manual_add(update, context)
     else:
         return await process_add_amount(update, context)
 
+# ================= MAIN =================
 
 def main():
     init_db()
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # COMMANDS
     app.add_handler(CommandHandler("start", start))
-
-    # CALLBACK BUTTONS
     app.add_handler(CallbackQueryHandler(callback_router))
 
-    # TEXT INPUT
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -384,14 +302,12 @@ def main():
         )
     )
 
-    # SCREENSHOT UPLOAD
     app.add_handler(
         MessageHandler(filters.PHOTO, process_screenshot)
     )
 
     print("🚀 BOT RUNNING")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
