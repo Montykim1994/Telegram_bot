@@ -254,7 +254,7 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not row:
         conn.close()
-        return await query.message.edit_caption("❌ Already processed")
+        return await query.message.edit_text("❌ Already processed")
 
     user_id, amount = row
 
@@ -274,8 +274,8 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ {amount} points approved"
         )
 
-        # ✅ THIS IS THE IMPORTANT FIX
-        await query.message.edit_caption(
+        # ✅ FIXED: Changed from edit_caption to edit_text
+        await query.message.edit_text(
             "✅ Approved\n\nWallet updated."
         )
 
@@ -291,8 +291,8 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Add request rejected"
         )
 
-        # ✅ FIX HERE TOO
-        await query.message.edit_caption(
+        # ✅ FIXED: Changed from edit_caption to edit_text
+        await query.message.edit_text(
             "❌ Rejected"
         )
 
@@ -342,7 +342,6 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_stats":
         return await admin_stats(update, context)
 
-    # ✅ ONLY route approval here — DO NOT edit message here
     if data.startswith("approve_") or data.startswith("reject_"):
         return await handle_approval(update, context)
 
@@ -374,7 +373,7 @@ def main():
     # CALLBACK BUTTONS
     app.add_handler(CallbackQueryHandler(callback_router))
 
-    # TEXT INPUT (NO LAMBDA, NO BUGS)
+    # TEXT INPUT
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
